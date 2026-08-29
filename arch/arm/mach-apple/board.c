@@ -937,19 +937,30 @@ static char *asahi_esp_devpart(void)
 		return devpart;
 
 	node = ofnode_path("/chosen");
+	if (!ofnode_valid(node) ||
+	    (!ofnode_read_bool(node, "linux-enablement-mac,disk-boot") &&
+	     !ofnode_read_bool(node, "tinyos,disk-boot")))
+		return devpart;
+
 	if (ofnode_valid(node)) {
 		uuid = ofnode_get_property(node, "asahi,efi-system-partition",
 					   &len);
 	}
 
-	nvme_scan_namespace();
+	ret = nvme_scan_namespace();
+	if (ret) {
+		log_err("Apple NVMe scan failed: %dE\n", ret);
+		return devpart;
+	}
 	for (devnum = 0, part = 0; ; devnum++) {
 		nvme_blk = blk_get_devnum_by_uclass_id(UCLASS_NVME, devnum);
 		if (!nvme_blk)
 			break;
 
 		dev = dev_get_parent(nvme_blk->bdev);
-		if (!device_is_compatible(dev, "apple,nvme-ans2"))
+		if (!device_is_compatible(dev, "apple,nvme-ans2") &&
+		    !device_is_compatible(dev, "apple,t8103-nvme-ans2") &&
+		    !device_is_compatible(dev, "apple,t8132-nvme-ans2"))
 			continue;
 
 		for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
@@ -997,11 +1008,20 @@ char *env_fat_get_dev_part(void)
 
 int board_late_init(void)
 {
+	char *esp_devpart;
 	u32 status = 0;
 	phys_addr_t addr;
 
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
-	env_set("fw_dev_part", asahi_esp_devpart());
+	esp_devpart = asahi_esp_devpart();
+	env_set("fw_dev_part", esp_devpart);
+	if ((ofnode_read_bool(ofnode_path("/chosen"),
+			      "linux-enablement-mac,disk-boot") ||
+	     ofnode_read_bool(ofnode_path("/chosen"), "tinyos,disk-boot"))) {
+		env_set("boot_targets", "nvme");
+		if (!esp_devpart[0])
+			panic("Disk boot requested but Apple NVMe/ESP discovery failed\n");
+	}
 
 	/* somewhat based on the Linux Kernel boot requirements:
 	 * align by 2M and maximal FDT size 2M
