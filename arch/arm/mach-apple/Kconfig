@@ -28,4 +28,14 @@ config SYS_MALLOC_F_LEN
 config LNX_KRNL_IMG_TEXT_OFFSET_BASE
 	default TEXT_BASE
 
+config WDT_APPLE_PRESERVE_INHERITED_STATE
+	bool "Preserve inherited Apple watchdog state"
+	depends on WDT_APPLE
+	help
+	  On supported Apple machines, treat the live watchdog reset-enable bit
+	  inherited from the previous boot stage as the sole automated-boot policy.
+	  An inherited disabled watchdog remains disabled. An inherited enabled
+	  watchdog receives bounded U-Boot and Linux handoff leases without generic
+	  cyclic servicing.
+
 endif
