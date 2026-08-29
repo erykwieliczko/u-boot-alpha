@@ -347,9 +347,9 @@ u32 video_index_to_colour(struct video_priv *priv, enum colour_idx idx)
 		if (CONFIG_IS_ENABLED(VIDEO_BPP32)) {
 			switch (priv->format) {
 			case VIDEO_X2R10G10B10:
-				return (colours[idx].r << 22) |
-				       (colours[idx].g << 12) |
-				       (colours[idx].b <<  2);
+				return video_pack_x2r10g10b10(colours[idx].r,
+							       colours[idx].g,
+							       colours[idx].b);
 			case VIDEO_RGBA8888:
 				return (colours[idx].r << 24) |
 				       (colours[idx].g << 16) |

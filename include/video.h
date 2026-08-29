@@ -69,6 +69,23 @@ enum video_format {
 	VIDEO_X2R10G10B10,
 };
 
+static inline u16 video_component_8_to_10(u8 component)
+{
+	return ((u16)component << 2) | (component >> 6);
+}
+
+static inline u8 video_component_10_to_8(u16 component)
+{
+	return ((u32)(component & 0x3ff) * 255 + 511) / 1023;
+}
+
+static inline u32 video_pack_x2r10g10b10(u8 red, u8 green, u8 blue)
+{
+	return (u32)video_component_8_to_10(red) << 20 |
+	       (u32)video_component_8_to_10(green) << 10 |
+	       video_component_8_to_10(blue);
+}
+
 /**
  * struct video_priv - Device information used by the video uclass
  *

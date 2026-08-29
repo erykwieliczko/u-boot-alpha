@@ -36,9 +36,7 @@ static uint get_bmp_col_16bpp(struct bmp_color_table_entry cte)
  */
 static u32 get_bmp_col_x2r10g10b10(struct bmp_color_table_entry *cte)
 {
-	return ((cte->red << 22U) |
-		(cte->green << 12U) |
-		(cte->blue << 2U));
+	return video_pack_x2r10g10b10(cte->red, cte->green, cte->blue);
 }
 
 /**
@@ -385,11 +383,12 @@ int video_bmp_display(struct udevice *dev, ulong bmp_image, int x, int y,
 						bmap += 3;
 						fb += 2;
 					} else if (eformat == VIDEO_X2R10G10B10) {
+						u8 blue = *bmap++;
+						u8 green = *bmap++;
+						u8 red = *bmap++;
 						u32 pix;
 
-						pix = *bmap++ << 2U;
-						pix |= *bmap++ << 12U;
-						pix |= *bmap++ << 22U;
+						pix = video_pack_x2r10g10b10(red, green, blue);
 						*fb++ = pix & 0xff;
 						*fb++ = (pix >> 8) & 0xff;
 						*fb++ = (pix >> 16) & 0xff;
@@ -422,12 +421,13 @@ int video_bmp_display(struct udevice *dev, ulong bmp_image, int x, int y,
 			for (i = 0; i < height; ++i) {
 				for (j = 0; j < width; j++) {
 					if (eformat == VIDEO_X2R10G10B10) {
+						u8 blue = *bmap++;
+						u8 green = *bmap++;
+						u8 red = *bmap++;
 						u32 pix;
 
-						pix = *bmap++ << 2U;
-						pix |= *bmap++ << 12U;
-						pix |= *bmap++ << 22U;
-						pix |= (*bmap++ >> 6) << 30U;
+						pix = video_pack_x2r10g10b10(red, green, blue);
+						bmap++;
 						*fb++ = pix & 0xff;
 						*fb++ = (pix >> 8) & 0xff;
 						*fb++ = (pix >> 16) & 0xff;

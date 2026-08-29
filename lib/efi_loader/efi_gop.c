@@ -70,19 +70,17 @@ static __always_inline struct efi_gop_pixel efi_vid30_to_blt_col(u32 vid)
 		.reserved = 0,
 	};
 
-	blt.blue  = (vid & 0x3ff) >> 2;
+	blt.blue = video_component_10_to_8(vid & 0x3ff);
 	vid >>= 10;
-	blt.green = (vid & 0x3ff) >> 2;
+	blt.green = video_component_10_to_8(vid & 0x3ff);
 	vid >>= 10;
-	blt.red   = (vid & 0x3ff) >> 2;
+	blt.red = video_component_10_to_8(vid & 0x3ff);
 	return blt;
 }
 
 static __always_inline u32 efi_blt_col_to_vid30(struct efi_gop_pixel *blt)
 {
-	return (u32)(blt->red   << 2) << 20 |
-	       (u32)(blt->green << 2) << 10 |
-	       (u32)(blt->blue  << 2);
+	return video_pack_x2r10g10b10(blt->red, blt->green, blt->blue);
 }
 
 static __always_inline struct efi_gop_pixel efi_vid16_to_blt_col(u16 vid)
@@ -172,7 +170,7 @@ static __always_inline efi_status_t gop_blt_int(struct efi_gop *this,
 		break;
 	case EFI_BLT_VIDEO_TO_BLT_BUFFER:
 	case EFI_BLT_VIDEO_TO_VIDEO:
-		swidth = gopobj->info.width;
+		swidth = gopobj->info.pixels_per_scanline;
 		if (!vid_bpp)
 			return EFI_UNSUPPORTED;
 		break;
@@ -185,7 +183,7 @@ static __always_inline efi_status_t gop_blt_int(struct efi_gop *this,
 	case EFI_BLT_BUFFER_TO_VIDEO:
 	case EFI_BLT_VIDEO_FILL:
 	case EFI_BLT_VIDEO_TO_VIDEO:
-		dwidth = gopobj->info.width;
+		dwidth = gopobj->info.pixels_per_scanline;
 		if (!vid_bpp)
 			return EFI_UNSUPPORTED;
 		break;
@@ -470,7 +468,7 @@ static efi_status_t EFIAPI gop_blt(struct efi_gop *this,
 efi_status_t efi_gop_register(void)
 {
 	struct efi_gop_obj *gopobj;
-	u32 bpix, format, col, row;
+	u32 bpix, bytes_per_pixel, format, col, row;
 	u64 fb_base, fb_size;
 	efi_status_t ret;
 	struct udevice *vdev;
@@ -496,10 +494,17 @@ efi_status_t efi_gop_register(void)
 	switch (bpix) {
 	case VIDEO_BPP16:
 	case VIDEO_BPP32:
+		bytes_per_pixel = VNBYTES(bpix);
 		break;
 	default:
 		/* So far, we only work in 16 or 32 bit mode */
 		debug("WARNING: Unsupported video mode\n");
+		return EFI_SUCCESS;
+	}
+	if (!priv->line_length || priv->line_length % bytes_per_pixel ||
+	    priv->line_length / bytes_per_pixel < col ||
+	    row > fb_size / priv->line_length) {
+		debug("WARNING: Invalid framebuffer stride or size\n");
 		return EFI_SUCCESS;
 	}
 
@@ -534,8 +539,7 @@ efi_status_t efi_gop_register(void)
 	gopobj->info.version = 0;
 	gopobj->info.width = col;
 	gopobj->info.height = row;
-	if (bpix == VIDEO_BPP32)
-	{
+	if (bpix == VIDEO_BPP32) {
 		if (format == VIDEO_X2R10G10B10) {
 			gopobj->info.pixel_format = EFI_GOT_BITMASK;
 			gopobj->info.pixel_bitmask[0] = 0x3ff00000; /* red */
@@ -551,7 +555,8 @@ efi_status_t efi_gop_register(void)
 		gopobj->info.pixel_bitmask[1] = 0x07e0; /* green */
 		gopobj->info.pixel_bitmask[2] = 0x001f; /* blue */
 	}
-	gopobj->info.pixels_per_scanline = col;
+	gopobj->info.pixels_per_scanline =
+		priv->line_length / bytes_per_pixel;
 	gopobj->bpix = bpix;
 	gopobj->fb = map_sysmem(fb_base, fb_size);
 	gopobj->vdev = vdev;

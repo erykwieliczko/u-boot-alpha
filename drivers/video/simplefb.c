@@ -19,7 +19,7 @@ static int simple_video_probe(struct udevice *dev)
 	int ret;
 	fdt_addr_t base;
 	fdt_size_t size;
-	u32 width, height, stride, rot;
+	u32 bytes_per_pixel, width, height, stride = 0, rot;
 
 	base = dev_read_addr_size(dev, &size);
 	if (base == FDT_ADDR_T_NONE) {
@@ -43,7 +43,8 @@ static int simple_video_probe(struct udevice *dev)
 
 	ret = ofnode_read_u32(node, "width", &width);
 	ret = ret ?: ofnode_read_u32(node, "height", &height);
-	if (ret || !width || !height) {
+	if (ret || !width || !height || width > USHRT_MAX ||
+	    height > USHRT_MAX) {
 		log_err("%s: invalid width or height: %d\n", __func__, ret);
 		return ret ?: -EINVAL;
 	}
@@ -53,9 +54,7 @@ static int simple_video_probe(struct udevice *dev)
 	uc_priv->ysize = height;
 
 	/* Optional - in most cases, auto-calculation works */
-	ret = ofnode_read_u32(node, "stride", &stride);
-	if (!ret || stride)
-		uc_priv->line_length = stride;
+	ofnode_read_u32(node, "stride", &stride);
 
 	format = ofnode_read_string(node, "format");
 	debug("%s: %dx%d@%s\n", __func__, uc_priv->xsize, uc_priv->ysize, format);
@@ -83,6 +82,16 @@ static int simple_video_probe(struct udevice *dev)
 		log_err("%s: invalid format: %s\n", __func__, format);
 		return -EINVAL;
 	}
+
+	bytes_per_pixel = VNBYTES(uc_priv->bpix);
+	if (!stride)
+		stride = width * bytes_per_pixel;
+	if (stride < width * bytes_per_pixel || stride % bytes_per_pixel ||
+	    height > size / stride) {
+		log_err("%s: invalid stride or framebuffer size\n", __func__);
+		return -EINVAL;
+	}
+	uc_priv->line_length = stride;
 
 	return 0;
 }
