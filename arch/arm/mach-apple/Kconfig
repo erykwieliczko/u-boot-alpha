@@ -38,4 +38,8 @@ config WDT_APPLE_PRESERVE_INHERITED_STATE
 	  watchdog receives bounded U-Boot and Linux handoff leases without generic
 	  cyclic servicing.
 
+config APPLE_HANDOFF
+	bool
+	default y if WDT_APPLE_PRESERVE_INHERITED_STATE || USB_DWC3_APPLE_HANDOFF
+
 endif
