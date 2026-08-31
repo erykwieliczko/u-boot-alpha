@@ -3,7 +3,6 @@
 #include <dm.h>
 #include <errno.h>
 #include <event.h>
-#include <apple_handoff.h>
 #include <wdt.h>
 #include <asm/io.h>
 
@@ -47,7 +46,7 @@ static int apple_wdt_inherited_adopt(void)
 
 EVENT_SPY_SIMPLE(EVT_DM_POST_INIT_R, apple_wdt_inherited_adopt);
 
-int apple_wdt_handoff_rearm(void)
+static int apple_wdt_rearm_inherited(u64 timeout_ms)
 {
 	struct udevice *dev;
 	int ret;
@@ -59,5 +58,15 @@ int apple_wdt_handoff_rearm(void)
 	if (ret)
 		return ret;
 
-	return wdt_start(dev, APPLE_LINUX_HANDOFF_WDT_MS, 0);
+	return wdt_start(dev, timeout_ms, 0);
+}
+
+void board_quiesce_devices(void)
+{
+	int ret;
+
+	ret = apple_wdt_rearm_inherited(APPLE_LINUX_HANDOFF_WDT_MS);
+	if (ret)
+		printf("WDT:   Failed to rearm inherited Apple watchdog (%d)\n",
+		       ret);
 }

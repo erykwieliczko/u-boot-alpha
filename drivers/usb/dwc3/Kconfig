@@ -97,15 +97,6 @@ config USB_DWC3_STI
 	  STiH407 family SoCs. This is a driver for the dwc3 to provide the
 	  glue logic to configure the controller.
 
-config USB_DWC3_APPLE_HANDOFF
-	bool "Apple inherited DWC3 console handoff"
-	depends on ARCH_APPLE && DM_EVENT && OF_CONTROL && CONSOLE_MUX
-	help
-	  Adopt a live DWC3 console initialized by an earlier Apple boot stage.
-	  The handoff descriptor supplies retained event, TRB and transfer-buffer
-	  state. The controller, PHY and DART are not reinitialized. Select this
-	  only on machines whose handoff contract is explicitly supported.
-
 menu "PHY Subsystem"
 
 config USB_DWC3_PHY_OMAP
