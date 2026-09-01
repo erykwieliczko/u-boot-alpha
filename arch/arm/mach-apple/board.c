@@ -934,6 +934,9 @@ static char *asahi_esp_devpart(void)
 	struct udevice *dev;
 	ofnode node;
 
+	if (!IS_ENABLED(CONFIG_NVME))
+		return devpart;
+
 	if (devpart[0])
 		return devpart;
 
