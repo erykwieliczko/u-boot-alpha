@@ -1048,7 +1048,8 @@ static int apple_setup_preloaded_efi(void)
 	ret |= env_set_hex("preloaded_efi_size", payload_size);
 	ret |= env_set("boot_targets", "");
 	ret |= env_set("bootcmd",
-		       "bootefi ${preloaded_efi_addr} ${fdtcontroladdr}");
+		       "bootefi ${preloaded_efi_addr}:${preloaded_efi_size} "
+		       "${fdtcontroladdr}");
 	if (ret)
 		return log_msg_ret("preloaded EFI environment", ret);
 
