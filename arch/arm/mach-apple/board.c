@@ -15,7 +15,6 @@
 #include <asm/global_data.h>
 #include <asm/io.h>
 #include <asm/system.h>
-#include <asm-generic/sections.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -1012,7 +1011,7 @@ char *env_fat_get_dev_part(void)
 
 static int apple_setup_preloaded_efi(void)
 {
-	phys_addr_t image_base, payload_addr;
+	phys_addr_t payload_addr;
 	phys_size_t payload_size;
 	ofnode chosen;
 	u32 size;
@@ -1029,9 +1028,11 @@ static int apple_setup_preloaded_efi(void)
 	if (!size)
 		return log_msg_ret("preloaded EFI size", -EINVAL);
 
-	image_base = gd->relocaddr - gd->reloc_off;
-	payload_addr = image_base +
-		ALIGN((ulong)(_end - __image_copy_start), SZ_4K);
+	ret = ofnode_read_u64(chosen, "u-boot,preloaded-efi-address",
+			      &payload_addr);
+	if (ret || !payload_addr)
+		return log_msg_ret("preloaded EFI address", ret ?: -EINVAL);
+
 	payload_size = size;
 
 	if (readb((void *)payload_addr) != 'M' ||

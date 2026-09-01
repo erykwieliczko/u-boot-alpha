@@ -43,9 +43,9 @@ config APPLE_PRELOADED_EFI
 	depends on EFI_LOADER
 	help
 	  Enable the diagnostic RAM-only EFI boot path. If the incoming device
-	  tree contains a u-boot,preloaded-efi-size property in /chosen, U-Boot
-	  treats an EFI image appended after its page-aligned u-boot-nodtb.bin as
-	  the boot payload. The image is reserved and started without probing
-	  storage. This is intended for early platform and EFI console bring-up.
+	  tree contains u-boot,preloaded-efi-address and
+	  u-boot,preloaded-efi-size properties in /chosen, U-Boot reserves and
+	  starts that image without probing storage. This is intended for early
+	  platform and EFI console bring-up.
 
 endif
