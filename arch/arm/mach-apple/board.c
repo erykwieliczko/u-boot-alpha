@@ -15,6 +15,7 @@
 #include <asm/global_data.h>
 #include <asm/io.h>
 #include <asm/system.h>
+#include <asm-generic/sections.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -1006,11 +1007,64 @@ char *env_fat_get_dev_part(void)
 
 #define lmb_alloc(size, addr) lmb_alloc_mem(LMB_MEM_ALLOC_ANY, SZ_2M, addr, size, LMB_NONE)
 
+static int apple_setup_preloaded_efi(void)
+{
+	phys_addr_t image_base, payload_addr;
+	phys_size_t payload_size;
+	ofnode chosen;
+	u32 size;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_APPLE_PRELOADED_EFI))
+		return 0;
+
+	chosen = ofnode_path("/chosen");
+	if (!ofnode_valid(chosen) ||
+	    ofnode_read_u32(chosen, "u-boot,preloaded-efi-size", &size))
+		return 0;
+
+	if (!size)
+		return log_msg_ret("preloaded EFI size", -EINVAL);
+
+	image_base = gd->relocaddr - gd->reloc_off;
+	payload_addr = image_base +
+		ALIGN((ulong)(_end - __image_copy_start), SZ_4K);
+	payload_size = size;
+
+	if (readb((void *)payload_addr) != 'M' ||
+	    readb((void *)(payload_addr + 1)) != 'Z')
+		return log_msg_ret("preloaded EFI signature", -ENOEXEC);
+
+	ret = lmb_alloc_mem(LMB_MEM_ALLOC_ADDR, 0, &payload_addr,
+			    payload_size, LMB_NOOVERWRITE);
+	if (ret)
+		return log_msg_ret("reserve preloaded EFI", ret);
+
+	ret = env_set_hex("preloaded_efi_addr", payload_addr);
+	ret |= env_set_hex("preloaded_efi_size", payload_size);
+	ret |= env_set("boot_targets", "");
+	ret |= env_set("bootcmd",
+		       "bootefi ${preloaded_efi_addr} ${fdtcontroladdr}");
+	if (ret)
+		return log_msg_ret("preloaded EFI environment", ret);
+
+	printf("Preloaded EFI payload: 0x%llx (%llu bytes)\n",
+	       (unsigned long long)payload_addr,
+	       (unsigned long long)payload_size);
+
+	return 0;
+}
+
 int board_late_init(void)
 {
 	char *esp_devpart;
 	u32 status = 0;
 	phys_addr_t addr;
+	int ret;
+
+	ret = apple_setup_preloaded_efi();
+	if (ret)
+		return ret;
 
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
 	esp_devpart = asahi_esp_devpart();

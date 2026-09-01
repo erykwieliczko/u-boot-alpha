@@ -38,4 +38,14 @@ config WDT_APPLE_PRESERVE_INHERITED_STATE
 	  watchdog receives bounded U-Boot and Linux handoff leases without generic
 	  cyclic servicing.
 
+config APPLE_PRELOADED_EFI
+	bool "Boot an EFI payload appended to U-Boot"
+	depends on EFI_LOADER
+	help
+	  Enable the diagnostic RAM-only EFI boot path. If the incoming device
+	  tree contains a u-boot,preloaded-efi-size property in /chosen, U-Boot
+	  treats an EFI image appended after its page-aligned u-boot-nodtb.bin as
+	  the boot payload. The image is reserved and started without probing
+	  storage. This is intended for early platform and EFI console bring-up.
+
 endif
