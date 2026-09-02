@@ -48,4 +48,8 @@ config APPLE_PRELOADED_EFI
 	  starts that image without probing storage. This is intended for early
 	  platform and EFI console bring-up.
 
+config APPLE_HANDOFF
+	bool
+	default y if WDT_APPLE_PRESERVE_INHERITED_STATE || USB_DWC3_APPLE_HANDOFF
+
 endif
