@@ -16,4 +16,3 @@ obj-$(CONFIG_USB_DWC3_LAYERSCAPE)	+= dwc3-layerscape.o
 obj-$(CONFIG_USB_DWC3_PHY_OMAP)		+= ti_usb_phy.o
 obj-$(CONFIG_USB_DWC3_PHY_SAMSUNG)	+= samsung_usb_phy.o
 obj-$(CONFIG_USB_DWC3_STI)		+= dwc3-generic-sti.o
-obj-$(CONFIG_USB_DWC3_APPLE_HANDOFF)	+= apple-handoff.o

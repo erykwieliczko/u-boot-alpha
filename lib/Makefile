@@ -32,11 +32,6 @@ endif
 
 obj-$(CONFIG_CIRCBUF) += circbuf.o
 
-obj-$(CONFIG_USB_DWC3_APPLE_HANDOFF) += apple_dwc3_handoff.o
-ifeq ($(CONFIG_USB_DWC3_APPLE_HANDOFF),)
-obj-$(CONFIG_UNIT_TEST) += apple_dwc3_handoff.o
-endif
-
 obj-y += crc8.o
 obj-$(CONFIG_ERRNO_STR) += errno_str.o
 obj-$(CONFIG_FIT) += fdtdec_common.o

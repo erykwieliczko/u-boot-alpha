@@ -151,14 +151,9 @@ F:	drivers/phy/phy-apple-atc.c
 F:	drivers/pinctrl/pinctrl-apple.c
 F:	drivers/power/domain/apple-pmgr.c
 F:	drivers/spi/apple_spi.c
-F:	drivers/usb/dwc3/apple-handoff.c
 F:	drivers/usb/host/xhci-pci-asmedia.c
 F:	drivers/watchdog/apple_wdt.c
-F:	include/apple_handoff.h
 F:	include/configs/apple.h
-F:	include/usb/apple_dwc3_handoff.h
-F:	lib/apple_dwc3_handoff.c
-F:	test/lib/apple_dwc3_handoff.c
 
 ARM
 M:	Tom Rini <trini@konsulko.com>
