@@ -471,7 +471,10 @@ static int nvme_alloc_cq(struct nvme_dev *dev, u16 qid,
 			    struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
+	int flags = NVME_QUEUE_PHYS_CONTIG;
+
+	if (!(dev->quirks & NVME_QUIRK_MINIMAL_QUEUE_FLAGS))
+		flags |= NVME_CQ_IRQ_ENABLED;
 
 	memset(&c, 0, sizeof(c));
 	c.create_cq.opcode = nvme_admin_create_cq;
@@ -488,7 +491,10 @@ static int nvme_alloc_sq(struct nvme_dev *dev, u16 qid,
 			    struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_SQ_PRIO_MEDIUM;
+	int flags = NVME_QUEUE_PHYS_CONTIG;
+
+	if (!(dev->quirks & NVME_QUIRK_MINIMAL_QUEUE_FLAGS))
+		flags |= NVME_SQ_PRIO_MEDIUM;
 
 	memset(&c, 0, sizeof(c));
 	c.create_sq.opcode = nvme_admin_create_sq;
@@ -605,11 +611,11 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 	if (result < 0)
 		goto release_cq;
 
+	nvme_init_queue(nvmeq, qid);
+
 	ops = (struct nvme_ops *)dev->udev->driver->ops;
 	if (ops && ops->configure_queue)
 		ops->configure_queue(nvmeq);
-
-	nvme_init_queue(nvmeq, qid);
 
 	return result;
 
@@ -783,6 +789,24 @@ static int nvme_blk_probe(struct udevice *udev)
 	ns->dev = ndev;
 	/* extract the namespace id from the block device name */
 	ns->ns_id = trailing_strtol(udev->name);
+	if (ndev->quirks & NVME_QUIRK_FIXED_NS_ONE_4K) {
+		if (ns->ns_id != 1) {
+			free(id);
+			return -ENODEV;
+		}
+		ns->lba_shift = 12;
+		desc->lba = U32_MAX;
+		desc->log2blksz = ns->lba_shift;
+		desc->blksz = 1 << ns->lba_shift;
+		desc->bdev = udev;
+		memcpy(desc->vendor, ndev->vendor, sizeof(ndev->vendor));
+		memcpy(desc->product, ndev->serial, sizeof(ndev->serial));
+		memcpy(desc->revision, ndev->firmware_rev,
+		       sizeof(ndev->firmware_rev));
+		list_add(&ns->list, &ndev->namespaces);
+		free(id);
+		return 0;
+	}
 	if (nvme_identify(ndev, ns->ns_id, 0, (dma_addr_t)(long)id)) {
 		free(id);
 		return -EIO;
@@ -822,6 +846,8 @@ static ulong nvme_blk_rw(struct udevice *udev, lbaint_t blknr,
 	u64 slba = blknr;
 	u16 lbas = 1 << (dev->max_transfer_shift - ns->lba_shift);
 	u64 total_lbas = blkcnt;
+
+	memset(&c, 0, sizeof(c));
 
 	flush_dcache_range((unsigned long)buffer,
 			   (unsigned long)buffer + total_len);
@@ -879,9 +905,23 @@ static ulong nvme_blk_write(struct udevice *udev, lbaint_t blknr,
 	return nvme_blk_rw(udev, blknr, blkcnt, (void *)buffer, false);
 }
 
+static int nvme_blk_flush(struct udevice *udev)
+{
+	struct nvme_ns *ns = dev_get_priv(udev);
+	struct nvme_command c;
+
+	memset(&c, 0, sizeof(c));
+	c.common.opcode = nvme_cmd_flush;
+	c.common.nsid = cpu_to_le32(ns->ns_id);
+
+	return nvme_submit_sync_cmd(ns->dev->queues[NVME_IO_Q], &c, NULL,
+				    IO_TIMEOUT);
+}
+
 static const struct blk_ops nvme_blk_ops = {
 	.read	= nvme_blk_read,
 	.write	= nvme_blk_write,
+	.flush	= nvme_blk_flush,
 };
 
 U_BOOT_DRIVER(nvme_blk) = {
@@ -948,6 +988,8 @@ int nvme_init(struct udevice *udev)
 	ret = nvme_get_info_from_identify(ndev);
 	if (ret)
 		goto free_prp_pool;
+	if (ndev->quirks & NVME_QUIRK_FIXED_NS_ONE_4K)
+		ndev->nn = 1;
 
 	/* Create a blk device for each namespace */
 
@@ -961,15 +1003,18 @@ int nvme_init(struct udevice *udev)
 		struct udevice *ns_udev;
 		char name[20];
 
-		memset(id, 0, sizeof(*id));
-		if (nvme_identify(ndev, i, 0, (dma_addr_t)(long)id)) {
-			ret = -EIO;
-			goto free_id;
-		}
+		if (!(ndev->quirks & NVME_QUIRK_FIXED_NS_ONE_4K)) {
+			memset(id, 0, sizeof(*id));
+			if (nvme_identify(ndev, i, 0,
+					  (dma_addr_t)(long)id)) {
+				ret = -EIO;
+				goto free_id;
+			}
 
-		/* skip inactive namespace */
-		if (!id->nsze)
-			continue;
+			/* skip inactive namespace */
+			if (!id->nsze)
+				continue;
+		}
 
 		/*
 		 * Encode the namespace id to the device name so that

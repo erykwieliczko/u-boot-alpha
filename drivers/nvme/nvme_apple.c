@@ -333,7 +333,9 @@ static int apple_nvme_probe(struct udevice *dev)
 		priv->ndev.queue_alignment = SZ_16K;
 		priv->ndev.max_transfer_shift_limit = 12;
 		priv->ndev.quirks = NVME_QUIRK_PREALLOCATE_IO_QUEUE |
-			NVME_QUIRK_SKIP_SET_NUM_QUEUES;
+			NVME_QUIRK_SKIP_SET_NUM_QUEUES |
+			NVME_QUIRK_FIXED_NS_ONE_4K |
+			NVME_QUIRK_MINIMAL_QUEUE_FLAGS;
 	}
 
 	writel((ANS_NVMMU_TCB_SIZE / ANS_NVMMU_TCB_PITCH) - 1,

@@ -629,6 +629,8 @@ struct nvme_dev {
 
 #define NVME_QUIRK_PREALLOCATE_IO_QUEUE	BIT(0)
 #define NVME_QUIRK_SKIP_SET_NUM_QUEUES	BIT(1)
+#define NVME_QUIRK_FIXED_NS_ONE_4K	BIT(2)
+#define NVME_QUIRK_MINIMAL_QUEUE_FLAGS	BIT(3)
 
 /* Admin queue and a single I/O queue. */
 enum nvme_queue_id {

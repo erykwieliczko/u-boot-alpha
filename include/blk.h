@@ -240,6 +240,14 @@ struct blk_ops {
 			       lbaint_t blkcnt);
 
 	/**
+	 * flush() - make completed writes durable on a block device
+	 *
+	 * @dev: Device to flush
+	 * Return: 0 on success, negative errno on failure
+	 */
+	int (*flush)(struct udevice *dev);
+
+	/**
 	 * select_hwpart() - select a particular hardware partition
 	 *
 	 * Some devices (e.g. MMC) can support partitioning at the hardware
@@ -330,6 +338,14 @@ long blk_write(struct udevice *dev, lbaint_t start, lbaint_t blkcnt,
  * or -ve on error. This never returns 0 unless @blkcnt is 0
  */
 long blk_erase(struct udevice *dev, lbaint_t start, lbaint_t blkcnt);
+
+/**
+ * blk_flush() - Make completed writes durable on a block device
+ *
+ * @dev: Device to flush
+ * Return: 0 on success, -ENOSYS if unsupported, or another negative errno
+ */
+int blk_flush(struct udevice *dev);
 
 /**
  * blk_find_device() - Find a block device
