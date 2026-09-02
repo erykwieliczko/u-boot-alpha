@@ -19,6 +19,7 @@
 #include <log.h>
 #include <stdio_dev.h>
 #include <video_console.h>
+#include <usb/apple_dwc3_handoff.h>
 #include <linux/delay.h>
 
 #define EFI_COUT_MODE_2 2
@@ -1018,6 +1019,14 @@ static efi_status_t EFIAPI efi_cin_read_key_stroke_ex(
 
 	EFI_ENTRY("%p, %p", this, key_data);
 
+	/*
+	 * The inherited transport owns DWC3 event polling.  Until the Apple input
+	 * backends can be polled without re-entering that path, report no EFI key
+	 * rather than allowing timer-driven input to corrupt the handoff state.
+	 */
+	if (apple_dwc3_handoff_active())
+		return EFI_EXIT(EFI_NOT_READY);
+
 	/* Check parameters */
 	if (!this || !key_data) {
 		ret = EFI_INVALID_PARAMETER;
@@ -1290,7 +1299,8 @@ static void EFIAPI efi_console_timer_notify(struct efi_event *event,
 					    void *context)
 {
 	EFI_ENTRY("%p, %p", event, context);
-	efi_cin_check();
+	if (!apple_dwc3_handoff_active())
+		efi_cin_check();
 	EFI_EXIT(EFI_SUCCESS);
 }
 

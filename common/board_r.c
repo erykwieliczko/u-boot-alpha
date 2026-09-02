@@ -68,6 +68,17 @@
 
 DECLARE_GLOBAL_DATA_PTR;
 
+#if CONFIG_IS_ENABLED(ARCH_APPLE)
+static int apple_log_init_r(void)
+{
+	/* Linker-list logging is optional on the RAM-loaded no-copy path. */
+	if (CONFIG_IS_ENABLED(SKIP_RELOCATE))
+		return 0;
+
+	return log_init();
+}
+#endif
+
 ulong monitor_flash_len;
 
 __weak int board_flash_wp_on(void)
@@ -169,6 +180,8 @@ static int initr_reloc_global_data(void)
 
 	if (!(gd->flags & GD_FLG_SKIP_RELOC))
 		efi_runtime_relocate(gd->relocaddr, NULL);
+	else if ((ulong)_start != CONFIG_TEXT_BASE)
+		efi_runtime_relocate((ulong)_start, NULL);
 
 #endif
 	/*
@@ -617,7 +630,11 @@ static void initcall_run_r(void)
 #endif
 	INITCALL(initr_barrier);
 	INITCALL(initr_malloc);
+#if CONFIG_IS_ENABLED(ARCH_APPLE)
+	INITCALL(apple_log_init_r);
+#else
 	INITCALL(log_init);
+#endif
 	INITCALL(initr_bootstage); /* Needs malloc() but has its own timer */
 #if CONFIG_IS_ENABLED(CONSOLE_RECORD)
 	INITCALL(console_record_init);

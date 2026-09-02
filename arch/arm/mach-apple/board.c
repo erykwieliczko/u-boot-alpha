@@ -764,6 +764,22 @@ static struct mm_region t8132_mem_map[] = {
 			 PTE_BLOCK_NON_SHARE |
 			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
 	}, {
+		/* USB DWC3, PHY and DART aperture */
+		.virt = 0x400000000,
+		.phys = 0x400000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* ANS/NVMe and NVMMU aperture */
+		.virt = 0x480000000,
+		.phys = 0x480000000,
+		.size = SZ_2G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
 		/* APCIE controller aperture */
 		.virt = 0x580000000,
 		.phys = 0x580000000,
@@ -927,10 +943,10 @@ static char *asahi_esp_devpart(void)
 {
 	struct disk_partition info;
 	struct blk_desc *nvme_blk;
+	struct udevice *blk_dev, *nvme_dev;
 	const char *uuid = NULL;
 	int devnum, len, p, part, ret;
 	static char devpart[64];
-	struct udevice *dev;
 	ofnode node;
 
 	if (!IS_ENABLED(CONFIG_NVME))
@@ -955,30 +971,34 @@ static char *asahi_esp_devpart(void)
 		log_err("Apple NVMe scan failed: %dE\n", ret);
 		return devpart;
 	}
-	for (devnum = 0, part = 0; ; devnum++) {
-		nvme_blk = blk_get_devnum_by_uclass_id(UCLASS_NVME, devnum);
-		if (!nvme_blk)
-			break;
+	part = 0;
+	for (uclass_first_device(UCLASS_NVME, &nvme_dev); nvme_dev;
+	     uclass_next_device(&nvme_dev)) {
+		device_foreach_child(blk_dev, nvme_dev) {
+			if (device_get_uclass_id(blk_dev) != UCLASS_BLK)
+				continue;
+			nvme_blk = dev_get_uclass_plat(blk_dev);
+			if (nvme_blk->uclass_id != UCLASS_NVME)
+				continue;
+			devnum = nvme_blk->devnum;
 
-		dev = dev_get_parent(nvme_blk->bdev);
-		if (!device_is_compatible(dev, "apple,nvme-ans2") &&
-		    !device_is_compatible(dev, "apple,t8103-nvme-ans2") &&
-		    !device_is_compatible(dev, "apple,t8132-nvme-ans2"))
-			continue;
+			for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
+				ret = part_get_info(nvme_blk, p, &info);
+				if (ret < 0)
+					break;
 
-		for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
-			ret = part_get_info(nvme_blk, p, &info);
-			if (ret < 0)
-				break;
-
-			if (info.bootable & PART_EFI_SYSTEM_PARTITION) {
 				if (uuid && strcasecmp(uuid, info.uuid) == 0) {
 					part = p;
 					break;
 				}
-				if (part == 0)
+				if (!uuid &&
+				    (info.bootable & PART_EFI_SYSTEM_PARTITION) &&
+				    part == 0)
 					part = p;
 			}
+
+			if (part > 0)
+				break;
 		}
 
 		if (part > 0)

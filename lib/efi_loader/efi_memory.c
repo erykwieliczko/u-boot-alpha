@@ -39,6 +39,7 @@ struct efi_mem_list {
 
 /* This list contains all memory map items */
 static LIST_HEAD(efi_mem);
+static bool efi_mem_initialized;
 
 #ifdef CONFIG_EFI_LOADER_BOUNCE_BUFFER
 void *efi_bounce_buffer;
@@ -924,6 +925,13 @@ int efi_map_update_notify(phys_addr_t addr, phys_size_t size,
 	u64 pages;
 	efi_status_t status;
 
+	/* A RAM-loaded image may deliberately skip U-Boot's second relocation. */
+	if (!efi_mem_initialized) {
+		INIT_LIST_HEAD(&efi_mem);
+		INIT_LIST_HEAD(&efi_events);
+		efi_mem_initialized = true;
+	}
+
 	efi_addr = (uintptr_t)map_sysmem(addr, 0);
 	pages = efi_size_in_pages(size + (efi_addr & EFI_PAGE_MASK));
 	efi_addr &= ~EFI_PAGE_MASK;
@@ -942,4 +950,3 @@ int efi_map_update_notify(phys_addr_t addr, phys_size_t size,
 
 	return 0;
 }
-

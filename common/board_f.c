@@ -21,6 +21,7 @@
 #include <dm.h>
 #include <env.h>
 #include <env_internal.h>
+#include <elf.h>
 #include <event.h>
 #include <fdtdec.h>
 #include <fs.h>
@@ -52,6 +53,27 @@
 #include <linux/log2.h>
 
 DECLARE_GLOBAL_DATA_PTR;
+
+#if CONFIG_IS_ENABLED(ARCH_APPLE)
+static int apple_relocate_in_place(void)
+{
+	Elf64_Rela *rel;
+	ulong base;
+
+	if (!CONFIG_IS_ENABLED(SKIP_RELOCATE))
+		return 0;
+
+	base = (ulong)_start - CONFIG_TEXT_BASE;
+	for (rel = (Elf64_Rela *)__rel_dyn_start;
+	     rel < (Elf64_Rela *)__rel_dyn_end; rel++) {
+		if (ELF64_R_TYPE(rel->r_info) != R_AARCH64_RELATIVE)
+			continue;
+		*(ulong *)(base + rel->r_offset) = base + rel->r_addend;
+	}
+
+	return 0;
+}
+#endif
 
 /*
  * Why is gd allocated a register? Prior to reloc it might be better to
@@ -882,6 +904,10 @@ static void initcall_run_f(void)
 	 * Please do not add logic to this function (variables, if (), etc.).
 	 * For simplicity it should remain an ordered list of function calls.
 	 */
+#if CONFIG_IS_ENABLED(ARCH_APPLE)
+	/* The raw relocation table aliases BSS and must be consumed first. */
+	INITCALL(apple_relocate_in_place);
+#endif
 	INITCALL(setup_mon_len);
 #if CONFIG_IS_ENABLED(OF_CONTROL)
 	INITCALL(fdtdec_setup);

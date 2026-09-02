@@ -57,7 +57,7 @@ static_assert(offsetof(struct apple_dwc3_handoff_raw, rx_busy) == 0xbc);
 DECLARE_GLOBAL_DATA_PTR;
 
 static const struct apple_dwc3_handoff_region j713_mmio[] = {
-	{ 0x700000000ULL, SZ_1G },
+	{ 0x402280000ULL, APPLE_DWC3_REGS_SIZE },
 };
 
 static void handoff_cache_invalidate(const void *address, size_t size)
