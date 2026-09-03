@@ -142,6 +142,7 @@ F:	board/apple/
 F:	configs/apple_j713_defconfig
 F:	configs/apple_m1_defconfig
 F:	doc/board/apple/
+F:	drivers/input/apple_mtp_kbd.c
 F:	drivers/input/apple_spi_kbd.c
 F:	drivers/iommu/apple_dart.c
 F:	drivers/mailbox/apple-mbox.c
@@ -153,7 +154,9 @@ F:	drivers/power/domain/apple-pmgr.c
 F:	drivers/spi/apple_spi.c
 F:	drivers/usb/host/xhci-pci-asmedia.c
 F:	drivers/watchdog/apple_wdt.c
+F:	include/apple_mtp.h
 F:	include/configs/apple.h
+F:	test/lib/apple_mtp.c
 
 ARM
 M:	Tom Rini <trini@konsulko.com>
