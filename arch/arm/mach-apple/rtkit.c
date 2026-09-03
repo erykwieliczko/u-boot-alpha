@@ -168,7 +168,7 @@ static int rtkit_handle_buf_req(struct apple_rtkit *rtk, int endpoint, struct ap
 	if (rtk->shmem_setup) {
 		ret = rtk->shmem_setup(rtk->cookie, buf);
 		if (ret < 0) {
-			printf("%s: shmen_setup failed for endpoint %d\n", __func__,
+			printf("%s: shmem_setup failed for endpoint %d\n", __func__,
 			       endpoint);
 			return ret;
 		}
@@ -283,7 +283,7 @@ int apple_rtkit_poll(struct apple_rtkit *rtk, ulong timeout)
 	}
 }
 
-int apple_rtkit_boot(struct apple_rtkit *rtk)
+static int apple_rtkit_boot_state(struct apple_rtkit *rtk, int pwrstate)
 {
 	struct apple_mbox_msg msg;
 	int endpoints[256];
@@ -295,9 +295,9 @@ int apple_rtkit_boot(struct apple_rtkit *rtk)
 	u32 bitmap, base;
 	int i, ret;
 
-	/* Wakup the IOP. */
+	/* Wake up or initialize the IOP. */
 	msg.msg0 = FIELD_PREP(APPLE_RTKIT_MGMT_TYPE, APPLE_RTKIT_MGMT_SET_IOP_PWR_STATE) |
-		FIELD_PREP(APPLE_RTKIT_MGMT_PWR_STATE, APPLE_RTKIT_PWR_STATE_ON);
+		FIELD_PREP(APPLE_RTKIT_MGMT_PWR_STATE, pwrstate);
 	msg.msg1 = APPLE_RTKIT_EP_MGMT;
 	ret = mbox_send(rtk->chan, &msg);
 	if (ret < 0)
@@ -419,6 +419,16 @@ wait_epmap:
 	}
 
 	return 0;
+}
+
+int apple_rtkit_boot(struct apple_rtkit *rtk)
+{
+	return apple_rtkit_boot_state(rtk, APPLE_RTKIT_PWR_STATE_ON);
+}
+
+int apple_rtkit_wake(struct apple_rtkit *rtk)
+{
+	return apple_rtkit_boot_state(rtk, APPLE_RTKIT_PWR_STATE_INIT);
 }
 
 int apple_rtkit_set_ap_power(struct apple_rtkit *rtk, int pwrstate)
