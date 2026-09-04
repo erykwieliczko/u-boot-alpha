@@ -789,24 +789,8 @@ static int nvme_blk_probe(struct udevice *udev)
 	ns->dev = ndev;
 	/* extract the namespace id from the block device name */
 	ns->ns_id = trailing_strtol(udev->name);
-	if (ndev->quirks & NVME_QUIRK_FIXED_NS_ONE_4K) {
-		if (ns->ns_id != 1) {
-			free(id);
-			return -ENODEV;
-		}
-		ns->lba_shift = 12;
-		desc->lba = U32_MAX;
-		desc->log2blksz = ns->lba_shift;
-		desc->blksz = 1 << ns->lba_shift;
-		desc->bdev = udev;
-		memcpy(desc->vendor, ndev->vendor, sizeof(ndev->vendor));
-		memcpy(desc->product, ndev->serial, sizeof(ndev->serial));
-		memcpy(desc->revision, ndev->firmware_rev,
-		       sizeof(ndev->firmware_rev));
-		list_add(&ns->list, &ndev->namespaces);
-		free(id);
-		return 0;
-	}
+	/* Even the namespace-one-only path must report real disk geometry. */
+	memset(id, 0, sizeof(*id));
 	if (nvme_identify(ndev, ns->ns_id, 0, (dma_addr_t)(long)id)) {
 		free(id);
 		return -EIO;
@@ -988,7 +972,7 @@ int nvme_init(struct udevice *udev)
 	ret = nvme_get_info_from_identify(ndev);
 	if (ret)
 		goto free_prp_pool;
-	if (ndev->quirks & NVME_QUIRK_FIXED_NS_ONE_4K)
+	if (ndev->quirks & NVME_QUIRK_NS_ONE_ONLY)
 		ndev->nn = 1;
 
 	/* Create a blk device for each namespace */
@@ -1003,7 +987,7 @@ int nvme_init(struct udevice *udev)
 		struct udevice *ns_udev;
 		char name[20];
 
-		if (!(ndev->quirks & NVME_QUIRK_FIXED_NS_ONE_4K)) {
+		if (!(ndev->quirks & NVME_QUIRK_NS_ONE_ONLY)) {
 			memset(id, 0, sizeof(*id));
 			if (nvme_identify(ndev, i, 0,
 					  (dma_addr_t)(long)id)) {

@@ -268,9 +268,12 @@ static int apple_nvme_probe(struct udevice *dev)
 		return -EINVAL;
 	priv->asc = map_sysmem(addr, 0);
 
-	ret = reset_get_bulk(dev, &priv->resets);
-	if (ret < 0)
-		return ret;
+	/* Linux owns the sole reset at the T8132 OS boundary. */
+	if (!priv->is_t8132) {
+		ret = reset_get_bulk(dev, &priv->resets);
+		if (ret < 0)
+			return ret;
+	}
 
 	ret = mbox_get_by_index(dev, 0, &priv->chan);
 	if (ret < 0)
@@ -323,8 +326,9 @@ static int apple_nvme_probe(struct udevice *dev)
 	       ((ANS_MAX_QUEUE_DEPTH << 16) | ANS_MAX_QUEUE_DEPTH),
 	       priv->base + ANS_MAX_PEND_CMDS_CTRL);
 
-	writel(readl(priv->base + ANS_UNKNOWN_CTRL) & ~ANS_PRP_NULL_CHECK,
-	       priv->base + ANS_UNKNOWN_CTRL);
+	if (!priv->is_t8132)
+		writel(readl(priv->base + ANS_UNKNOWN_CTRL) &
+		       ~ANS_PRP_NULL_CHECK, priv->base + ANS_UNKNOWN_CTRL);
 
 	strcpy(priv->ndev.vendor, "Apple");
 	if (priv->is_t8132) {
@@ -334,13 +338,15 @@ static int apple_nvme_probe(struct udevice *dev)
 		priv->ndev.max_transfer_shift_limit = 12;
 		priv->ndev.quirks = NVME_QUIRK_PREALLOCATE_IO_QUEUE |
 			NVME_QUIRK_SKIP_SET_NUM_QUEUES |
-			NVME_QUIRK_FIXED_NS_ONE_4K |
+			NVME_QUIRK_NS_ONE_ONLY |
 			NVME_QUIRK_MINIMAL_QUEUE_FLAGS;
 	}
 
-	writel((ANS_NVMMU_TCB_SIZE / ANS_NVMMU_TCB_PITCH) - 1,
+	writel(priv->is_t8132 ? ANS_MAX_QUEUE_DEPTH - 1 :
+	       (ANS_NVMMU_TCB_SIZE / ANS_NVMMU_TCB_PITCH) - 1,
 	       priv->nvmmu + ANS_NVMMU_NUM);
-	writel(0, priv->base + ANS_MODESEL);
+	if (!priv->is_t8132)
+		writel(0, priv->base + ANS_MODESEL);
 
 	priv->ndev.bar = priv->base;
 	ret = nvme_init(dev);
