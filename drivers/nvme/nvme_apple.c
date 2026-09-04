@@ -367,7 +367,7 @@ static int apple_nvme_remove(struct udevice *dev)
 	struct apple_nvme_priv *priv = dev_get_priv(dev);
 	struct ofnode_phandle_args args;
 	u32 ctrl;
-	int ret, shutdown_ret;
+	int i, ret, shutdown_ret;
 
 	ret = nvme_shutdown(dev);
 
@@ -386,9 +386,18 @@ static int apple_nvme_remove(struct udevice *dev)
 	sart_free(priv->sart);
 	priv->sart = NULL;
 
-	reset_assert_bulk(&priv->resets);
-	reset_deassert_bulk(&priv->resets);
-	reset_release_bulk(&priv->resets);
+	/*
+	 * reset_release_bulk() asserts each reset before freeing it.  Linux
+	 * needs the quiesced ANS domain left deasserted so it can inspect SART
+	 * before its native NVMe driver resets the controller.  Drop only
+	 * U-Boot's ownership here without changing the hardware state.
+	 */
+	for (i = 0; i < priv->resets.count; i++) {
+		shutdown_ret = reset_free(&priv->resets.resets[i]);
+		if (!ret)
+			ret = shutdown_ret;
+	}
+	priv->resets.count = 0;
 
 	if (!dev_read_phandle_with_args(dev, "resets", "#reset-cells", 0, 0,
 					&args))
@@ -421,5 +430,6 @@ U_BOOT_DRIVER(apple_nvme) = {
 	.probe = apple_nvme_probe,
 	.remove = apple_nvme_remove,
 	.ops = &apple_nvme_ops,
-	.flags = DM_FLAG_OS_PREPARE,
+	/* Keep SART readable until Linux has attached the ANS power domain. */
+	.flags = DM_FLAG_OS_PREPARE | DM_FLAG_LEAVE_PD_ON,
 };
