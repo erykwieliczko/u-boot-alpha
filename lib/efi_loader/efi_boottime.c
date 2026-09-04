@@ -2245,7 +2245,8 @@ static efi_status_t EFIAPI efi_exit_boot_services(efi_handle_t image_handle,
 		if (IS_ENABLED(CONFIG_DM_ETH))
 			eth_halt();
 		board_quiesce_devices();
-		dm_remove_devices_active();
+		if (!board_handoff_remove_devices())
+			dm_remove_devices_active();
 	}
 
 	/* Patch out unsupported runtime function */

@@ -4,6 +4,8 @@
  */
 
 #include <dm.h>
+#include <bootm.h>
+#include <dm/device-internal.h>
 #include <dm/uclass-internal.h>
 #include <efi_loader.h>
 #include <env.h>
@@ -15,8 +17,79 @@
 #include <asm/global_data.h>
 #include <asm/io.h>
 #include <asm/system.h>
+#include <asm/arch/wdt_inherited.h>
 
 DECLARE_GLOBAL_DATA_PTR;
+
+static int apple_remove_active_driver(enum uclass_id id,
+				      const struct driver *driver)
+{
+	struct udevice *dev;
+
+	for (uclass_find_first_device(id, &dev); dev;
+	     uclass_find_next_device(&dev)) {
+		/* Match the bound driver, independent of mutable flat-DT offsets. */
+		if (!device_active(dev) || dev->driver != driver)
+			continue;
+
+		printf("Apple OS handoff: removing %s\n", dev->name);
+		return device_remove(dev, DM_REMOVE_OS_PREPARE);
+	}
+
+	return -ENODEV;
+}
+
+static bool apple_j713_disk_boot(void)
+{
+	ofnode chosen;
+
+	if (!of_machine_is_compatible("apple,j713") ||
+	    !of_machine_is_compatible("apple,t8132"))
+		return false;
+
+	chosen = ofnode_path("/chosen");
+	return ofnode_valid(chosen) &&
+		ofnode_read_bool(chosen, "linux-enablement-mac,disk-boot");
+}
+
+void board_quiesce_devices(void)
+{
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	int ret;
+#endif
+
+	apple_wdt_quiesce_devices();
+
+	if (!apple_j713_disk_boot())
+		return;
+
+	/* Retain and publish MTP state before the storage fabric is quiesced. */
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	ret = apple_remove_active_driver(UCLASS_KEYBOARD,
+					 DM_DRIVER_GET(apple_mtp_kbd));
+	if (ret)
+		panic("MTP: OS handoff failed (%d)\n", ret);
+#endif
+}
+
+bool board_handoff_remove_devices(void)
+{
+#if CONFIG_IS_ENABLED(NVME_APPLE)
+	int ret;
+
+	if (!apple_j713_disk_boot())
+		return false;
+
+	ret = apple_remove_active_driver(UCLASS_NVME, DM_DRIVER_GET(apple_nvme));
+	if (ret)
+		panic("NVMe: OS handoff failed (%d)\n", ret);
+
+	printf("NVMe: J713 OS handoff complete; Apple DART state retained\n");
+	return true;
+#else
+	return false;
+#endif
+}
 
 /* Apple M1/M2 */
 
@@ -1086,6 +1159,19 @@ int board_late_init(void)
 	u32 status = 0;
 	phys_addr_t addr;
 	int ret;
+
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	if (apple_j713_disk_boot()) {
+		struct udevice *keyboard;
+
+		/* An unattended EFI boot need not poll console input at all. */
+		ret = uclass_get_device_by_driver(UCLASS_KEYBOARD,
+						 DM_DRIVER_GET(apple_mtp_kbd),
+						 &keyboard);
+		if (ret)
+			return log_msg_ret("initialize MTP for OS handoff", ret);
+	}
+#endif
 
 	ret = apple_setup_preloaded_efi();
 	if (ret)

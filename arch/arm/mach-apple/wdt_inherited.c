@@ -5,6 +5,7 @@
 #include <event.h>
 #include <wdt.h>
 #include <asm/io.h>
+#include <asm/arch/wdt_inherited.h>
 
 #define APPLE_WDT_CTRL			0x1c
 #define APPLE_WDT_CTRL_RESET_EN		BIT(2)
@@ -61,7 +62,7 @@ static int apple_wdt_rearm_inherited(u64 timeout_ms)
 	return wdt_start(dev, timeout_ms, 0);
 }
 
-void board_quiesce_devices(void)
+void apple_wdt_quiesce_devices(void)
 {
 	int ret;
 

@@ -51,6 +51,11 @@ __weak void board_quiesce_devices(void)
 {
 }
 
+__weak bool board_handoff_remove_devices(void)
+{
+	return false;
+}
+
 #if CONFIG_IS_ENABLED(LEGACY_IMAGE_FORMAT)
 /**
  * image_get_kernel - verify legacy format kernel image

@@ -217,6 +217,9 @@ void arch_preboot_os(void);
  */
 void board_quiesce_devices(void);
 
+/* Return true when a board-specific handoff completed active-device removal. */
+bool board_handoff_remove_devices(void);
+
 /**
  * switch_to_non_secure_mode() - switch to non-secure mode
  */
