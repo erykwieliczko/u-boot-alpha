@@ -4,6 +4,8 @@
  */
 
 #include <dm.h>
+#include <bootm.h>
+#include <dm/device-internal.h>
 #include <dm/uclass-internal.h>
 #include <efi_loader.h>
 #include <env.h>
@@ -15,8 +17,79 @@
 #include <asm/global_data.h>
 #include <asm/io.h>
 #include <asm/system.h>
+#include <asm/arch/wdt_inherited.h>
 
 DECLARE_GLOBAL_DATA_PTR;
+
+static int apple_remove_active_driver(enum uclass_id id,
+				      const struct driver *driver)
+{
+	struct udevice *dev;
+
+	for (uclass_find_first_device(id, &dev); dev;
+	     uclass_find_next_device(&dev)) {
+		/* Match the bound driver, independent of mutable flat-DT offsets. */
+		if (!device_active(dev) || dev->driver != driver)
+			continue;
+
+		printf("Apple OS handoff: removing %s\n", dev->name);
+		return device_remove(dev, DM_REMOVE_OS_PREPARE);
+	}
+
+	return -ENODEV;
+}
+
+static bool apple_j713_disk_boot(void)
+{
+	ofnode chosen;
+
+	if (!of_machine_is_compatible("apple,j713") ||
+	    !of_machine_is_compatible("apple,t8132"))
+		return false;
+
+	chosen = ofnode_path("/chosen");
+	return ofnode_valid(chosen) &&
+		ofnode_read_bool(chosen, "linux-enablement-mac,disk-boot");
+}
+
+void board_quiesce_devices(void)
+{
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	int ret;
+#endif
+
+	apple_wdt_quiesce_devices();
+
+	if (!apple_j713_disk_boot())
+		return;
+
+	/* Retain and publish MTP state before the storage fabric is quiesced. */
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	ret = apple_remove_active_driver(UCLASS_KEYBOARD,
+					 DM_DRIVER_GET(apple_mtp_kbd));
+	if (ret)
+		panic("MTP: OS handoff failed (%d)\n", ret);
+#endif
+}
+
+bool board_handoff_remove_devices(void)
+{
+#if CONFIG_IS_ENABLED(NVME_APPLE)
+	int ret;
+
+	if (!apple_j713_disk_boot())
+		return false;
+
+	ret = apple_remove_active_driver(UCLASS_NVME, DM_DRIVER_GET(apple_nvme));
+	if (ret)
+		panic("NVMe: OS handoff failed (%d)\n", ret);
+
+	printf("NVMe: J713 OS handoff complete; Apple DART state retained\n");
+	return true;
+#else
+	return false;
+#endif
+}
 
 /* Apple M1/M2 */
 
@@ -752,6 +825,91 @@ static struct mm_region t8122_mem_map[] = {
 	}
 };
 
+/* Apple M4 */
+
+static struct mm_region t8132_mem_map[] = {
+	{
+		/* SoC I/O, including PMGR, WD1, MTP, AIC and UART */
+		.virt = 0x380000000,
+		.phys = 0x380000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* USB DWC3, PHY and DART aperture */
+		.virt = 0x400000000,
+		.phys = 0x400000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* ANS/NVMe and NVMMU aperture */
+		.virt = 0x480000000,
+		.phys = 0x480000000,
+		.size = SZ_2G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* APCIE controller aperture */
+		.virt = 0x580000000,
+		.phys = 0x580000000,
+		.size = SZ_512M,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* APCIE ECAM/device aperture */
+		.virt = 0x5a0000000,
+		.phys = 0x5a0000000,
+		.size = SZ_512M,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* APCIE MMIO aperture */
+		.virt = 0x5c0000000,
+		.phys = 0x5c0000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRE) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* ATC0 I/O */
+		.virt = 0x700000000,
+		.phys = 0x700000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* ATC1 I/O */
+		.virt = 0xb00000000,
+		.phys = 0xb00000000,
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* RAM, replaced from the incoming FDT */
+		.virt = 0x10000000000,
+		.phys = 0x10000000000,
+		.size = 8UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) |
+			 PTE_BLOCK_INNER_SHARE
+	}, {
+		/* Framebuffer, replaced from the incoming FDT */
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL_NC) |
+			 PTE_BLOCK_INNER_SHARE |
+			 PTE_BLOCK_PXN | PTE_BLOCK_UXN
+	}, {
+		/* List terminator */
+		0,
+	}
+};
+
 struct mm_region *mem_map;
 
 int board_init(void)
@@ -801,6 +959,8 @@ void build_mem_map(void)
 		mem_map = t6022_mem_map;
 	else if (of_machine_is_compatible("apple,t8122"))
 		mem_map = t8122_mem_map;
+	else if (of_machine_is_compatible("apple,t8132"))
+		mem_map = t8132_mem_map;
 	else
 		panic("Unsupported SoC\n");
 
@@ -856,44 +1016,62 @@ static char *asahi_esp_devpart(void)
 {
 	struct disk_partition info;
 	struct blk_desc *nvme_blk;
+	struct udevice *blk_dev, *nvme_dev;
 	const char *uuid = NULL;
 	int devnum, len, p, part, ret;
 	static char devpart[64];
-	struct udevice *dev;
 	ofnode node;
+
+	if (!IS_ENABLED(CONFIG_NVME))
+		return devpart;
 
 	if (devpart[0])
 		return devpart;
 
 	node = ofnode_path("/chosen");
+	if (!ofnode_valid(node) ||
+	    (!ofnode_read_bool(node, "linux-enablement-mac,disk-boot") &&
+	     !ofnode_read_bool(node, "tinyos,disk-boot")))
+		return devpart;
+
 	if (ofnode_valid(node)) {
 		uuid = ofnode_get_property(node, "asahi,efi-system-partition",
 					   &len);
 	}
 
-	nvme_scan_namespace();
-	for (devnum = 0, part = 0; ; devnum++) {
-		nvme_blk = blk_get_devnum_by_uclass_id(UCLASS_NVME, devnum);
-		if (!nvme_blk)
-			break;
+	ret = nvme_scan_namespace();
+	if (ret) {
+		log_err("Apple NVMe scan failed: %dE\n", ret);
+		return devpart;
+	}
+	part = 0;
+	for (uclass_first_device(UCLASS_NVME, &nvme_dev); nvme_dev;
+	     uclass_next_device(&nvme_dev)) {
+		device_foreach_child(blk_dev, nvme_dev) {
+			if (device_get_uclass_id(blk_dev) != UCLASS_BLK)
+				continue;
+			nvme_blk = dev_get_uclass_plat(blk_dev);
+			if (nvme_blk->uclass_id != UCLASS_NVME)
+				continue;
+			devnum = nvme_blk->devnum;
 
-		dev = dev_get_parent(nvme_blk->bdev);
-		if (!device_is_compatible(dev, "apple,nvme-ans2"))
-			continue;
+			for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
+				ret = part_get_info(nvme_blk, p, &info);
+				if (ret < 0)
+					break;
 
-		for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
-			ret = part_get_info(nvme_blk, p, &info);
-			if (ret < 0)
-				break;
-
-			if (info.bootable & PART_EFI_SYSTEM_PARTITION) {
 				if (uuid && strcasecmp(uuid, info.uuid) == 0) {
 					part = p;
 					break;
 				}
-				if (part == 0)
+				if (!uuid &&
+				    (info.bootable & PART_EFI_SYSTEM_PARTITION) &&
+				    part == 0)
 					part = p;
 			}
+
+			if (part > 0)
+				break;
 		}
 
 		if (part > 0)
@@ -924,13 +1102,91 @@ char *env_fat_get_dev_part(void)
 
 #define lmb_alloc(size, addr) lmb_alloc_mem(LMB_MEM_ALLOC_ANY, SZ_2M, addr, size, LMB_NONE)
 
+static int apple_setup_preloaded_efi(void)
+{
+	phys_addr_t payload_addr;
+	phys_size_t payload_size;
+	ofnode chosen;
+	u32 size;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_APPLE_PRELOADED_EFI))
+		return 0;
+
+	chosen = ofnode_path("/chosen");
+	if (!ofnode_valid(chosen) ||
+	    ofnode_read_u32(chosen, "u-boot,preloaded-efi-size", &size))
+		return 0;
+
+	if (!size)
+		return log_msg_ret("preloaded EFI size", -EINVAL);
+
+	ret = ofnode_read_u64(chosen, "u-boot,preloaded-efi-address",
+			      &payload_addr);
+	if (ret || !payload_addr)
+		return log_msg_ret("preloaded EFI address", ret ?: -EINVAL);
+
+	payload_size = size;
+
+	if (readb((void *)payload_addr) != 'M' ||
+	    readb((void *)(payload_addr + 1)) != 'Z')
+		return log_msg_ret("preloaded EFI signature", -ENOEXEC);
+
+	ret = lmb_alloc_mem(LMB_MEM_ALLOC_ADDR, 0, &payload_addr,
+			    payload_size, LMB_NOOVERWRITE);
+	if (ret)
+		return log_msg_ret("reserve preloaded EFI", ret);
+
+	ret = env_set_hex("preloaded_efi_addr", payload_addr);
+	ret |= env_set_hex("preloaded_efi_size", payload_size);
+	ret |= env_set("boot_targets", "");
+	ret |= env_set("bootcmd",
+		       "bootefi ${preloaded_efi_addr}:${preloaded_efi_size} "
+		       "${fdtcontroladdr}");
+	if (ret)
+		return log_msg_ret("preloaded EFI environment", ret);
+
+	printf("Preloaded EFI payload: 0x%llx (%llu bytes)\n",
+	       (unsigned long long)payload_addr,
+	       (unsigned long long)payload_size);
+
+	return 0;
+}
+
 int board_late_init(void)
 {
+	char *esp_devpart;
 	u32 status = 0;
 	phys_addr_t addr;
+	int ret;
+
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	if (apple_j713_disk_boot()) {
+		struct udevice *keyboard;
+
+		/* An unattended EFI boot need not poll console input at all. */
+		ret = uclass_get_device_by_driver(UCLASS_KEYBOARD,
+						 DM_DRIVER_GET(apple_mtp_kbd),
+						 &keyboard);
+		if (ret)
+			return log_msg_ret("initialize MTP for OS handoff", ret);
+	}
+#endif
+
+	ret = apple_setup_preloaded_efi();
+	if (ret)
+		return ret;
 
 	env_set("storage_interface", blk_get_uclass_name(UCLASS_NVME));
-	env_set("fw_dev_part", asahi_esp_devpart());
+	esp_devpart = asahi_esp_devpart();
+	env_set("fw_dev_part", esp_devpart);
+	if ((ofnode_read_bool(ofnode_path("/chosen"),
+			      "linux-enablement-mac,disk-boot") ||
+	     ofnode_read_bool(ofnode_path("/chosen"), "tinyos,disk-boot"))) {
+		env_set("boot_targets", "nvme");
+		if (!esp_devpart[0])
+			panic("Disk boot requested but Apple NVMe/ESP discovery failed\n");
+	}
 
 	/* somewhat based on the Linux Kernel boot requirements:
 	 * align by 2M and maximal FDT size 2M
