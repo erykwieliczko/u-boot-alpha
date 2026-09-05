@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Build-time control DT for the J713-only U-Boot configuration.
+ *
+ * CONFIG_OF_HAS_PRIOR_STAGE and CONFIG_OF_OMIT_DTB ensure that this tree is
+ * not embedded in the payload. m1n1 supplies the complete runtime J713 DT.
+ */
+
+/dts-v1/;
+
+/ {
+	compatible = "apple,j713", "apple,t8132", "apple,arm-platform";
+	model = "Apple MacBook Air (13-inch, M4)";
+};

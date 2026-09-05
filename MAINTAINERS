@@ -135,11 +135,14 @@ APPLE M1 SOC SUPPORT
 M:	Mark Kettenis <kettenis@openbsd.org>
 R:	Janne Grunau <j@jannau.net>
 S:	Maintained
+F:	arch/arm/dts/t8132-j713.dts
 F:	arch/arm/include/asm/arch-apple/
 F:	arch/arm/mach-apple/
 F:	board/apple/
+F:	configs/apple_j713_defconfig
 F:	configs/apple_m1_defconfig
 F:	doc/board/apple/
+F:	drivers/input/apple_mtp_kbd.c
 F:	drivers/input/apple_spi_kbd.c
 F:	drivers/iommu/apple_dart.c
 F:	drivers/mailbox/apple-mbox.c
@@ -151,7 +154,9 @@ F:	drivers/power/domain/apple-pmgr.c
 F:	drivers/spi/apple_spi.c
 F:	drivers/usb/host/xhci-pci-asmedia.c
 F:	drivers/watchdog/apple_wdt.c
+F:	include/apple_mtp.h
 F:	include/configs/apple.h
+F:	test/lib/apple_mtp.c
 
 ARM
 M:	Tom Rini <trini@konsulko.com>
@@ -1992,6 +1997,7 @@ S:	Maintained
 T:	git https://source.denx.de/u-boot/custodians/u-boot-video.git
 F:	drivers/video/
 F:	include/video*.h
+F:	test/lib/video.c
 
 VirtIO
 M:	Bin Meng <bmeng.cn@gmail.com>

@@ -28,4 +28,24 @@ config SYS_MALLOC_F_LEN
 config LNX_KRNL_IMG_TEXT_OFFSET_BASE
 	default TEXT_BASE
 
+config WDT_APPLE_PRESERVE_INHERITED_STATE
+	bool "Preserve inherited Apple watchdog state"
+	depends on WDT_APPLE
+	help
+	  On supported Apple machines, treat the live watchdog reset-enable bit
+	  inherited from the previous boot stage as the sole automated-boot policy.
+	  An inherited disabled watchdog remains disabled. An inherited enabled
+	  watchdog receives bounded U-Boot and Linux handoff leases without generic
+	  cyclic servicing.
+
+config APPLE_PRELOADED_EFI
+	bool "Boot an EFI payload appended to U-Boot"
+	depends on EFI_LOADER
+	help
+	  Enable the diagnostic RAM-only EFI boot path. If the incoming device
+	  tree contains u-boot,preloaded-efi-address and
+	  u-boot,preloaded-efi-size properties in /chosen, U-Boot reserves and
+	  starts that image without probing storage. This is intended for early
+	  platform and EFI console bring-up.
+
 endif
