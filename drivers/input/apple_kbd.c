@@ -127,6 +127,12 @@ int apple_kbd_handle_report(struct input_config *input,
 		return 0;
 
 	memcpy(&priv->new, report, sizeof(struct apple_kbd_report));
+	if (!priv->have_report) {
+		/* Establish state without replaying firmware-stale keys. */
+		memcpy(&priv->old, &priv->new, sizeof(struct apple_kbd_report));
+		priv->have_report = true;
+		return 1;
+	}
 	apple_kbd_service_modifiers(input, priv);
 	for (i = 0; i < sizeof(priv->new.keycode); i++) {
 		apple_kbd_service_key(input, priv, i, 1);

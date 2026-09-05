@@ -21,6 +21,7 @@ struct apple_kbd_report {
 struct apple_kbd_priv {
 	struct apple_kbd_report old; /* previous keyboard input report */
 	struct apple_kbd_report new; /* current keyboard input report */
+	bool have_report;
 };
 
 int apple_kbd_handle_report(struct input_config *input,
