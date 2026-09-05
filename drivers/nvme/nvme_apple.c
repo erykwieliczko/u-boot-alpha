@@ -31,6 +31,8 @@
 #define  ANS_LINEAR_SQ_CTRL_EN	(1 << 0)
 #define ANS_ASQ_DB		0x2490c
 #define ANS_IOSQ_DB		0x24910
+#define ANS_IOQ_SQ_BASE		0x01200
+#define ANS_IOQ_CQ_BASE		0x01208
 #define ANS_NVMMU_NUM		0x28100
 #define ANS_NVMMU_BASE_ASQ	0x28108
 #define ANS_NVMMU_BASE_IOSQ	0x28110
@@ -56,14 +58,19 @@ struct ans_nvmmu_tcb {
 	u8 pad1[16];
 	u64 prp1;
 	u64 prp2;
+	u8 pad2[88];
 };
 
-#define ANS_NVMMU_TCB_WRITE	BIT(0)
-#define ANS_NVMMU_TCB_READ	BIT(1)
+#define ANS_NVMMU_TCB_FROM_DEVICE	BIT(0)
+#define ANS_NVMMU_TCB_TO_DEVICE		BIT(1)
+
+static_assert(sizeof(struct ans_nvmmu_tcb) == ANS_NVMMU_TCB_PITCH,
+	      "invalid Apple NVMMU TCB size");
 
 struct apple_nvme_priv {
 	struct nvme_dev ndev;
 	void *base;		/* NVMe registers */
+	void *nvmmu;		/* NVMMU registers */
 	void *asc;		/* ASC registers */
 	struct reset_ctl_bulk resets; /* ASC reset */
 	struct mbox_chan chan;
@@ -71,6 +78,7 @@ struct apple_nvme_priv {
 	struct apple_rtkit *rtk;
 	struct ans_nvmmu_tcb *tcbs[NVME_Q_NUM]; /* Submission queue TCBs */
 	u32 __iomem *q_db[NVME_Q_NUM]; /* Submission queue doorbell */
+	bool is_t8132;
 };
 
 static int apple_nvme_setup_queue(struct nvme_queue *nvmeq)
@@ -87,7 +95,9 @@ static int apple_nvme_setup_queue(struct nvme_queue *nvmeq)
 		return -EINVAL;
 	}
 
-	priv->tcbs[nvmeq->qid] = (void *)memalign(4096, ANS_NVMMU_TCB_SIZE);
+	priv->tcbs[nvmeq->qid] =
+		(void *)memalign(priv->is_t8132 ? SZ_16K : 4096,
+				 ANS_NVMMU_TCB_SIZE);
 	if (!priv->tcbs[nvmeq->qid])
 		return -ENOMEM;
 
@@ -98,17 +108,39 @@ static int apple_nvme_setup_queue(struct nvme_queue *nvmeq)
 		priv->q_db[nvmeq->qid] =
 			((void __iomem *)dev->bar) + ANS_ASQ_DB;
 		nvme_writeq((ulong)priv->tcbs[nvmeq->qid],
-			    ((void __iomem *)dev->bar) + ANS_NVMMU_BASE_ASQ);
+			    priv->nvmmu + ANS_NVMMU_BASE_ASQ);
 		break;
 	case NVME_IO_Q:
 		priv->q_db[nvmeq->qid] =
 			((void __iomem *)dev->bar) + ANS_IOSQ_DB;
 		nvme_writeq((ulong)priv->tcbs[nvmeq->qid],
-			    ((void __iomem *)dev->bar) + ANS_NVMMU_BASE_IOSQ);
+			    priv->nvmmu + ANS_NVMMU_BASE_IOSQ);
 		break;
 	}
 
 	return 0;
+}
+
+static void apple_nvme_configure_queue(struct nvme_queue *nvmeq)
+{
+	struct apple_nvme_priv *priv =
+		container_of(nvmeq->dev, struct apple_nvme_priv, ndev);
+
+	if (!priv->is_t8132 || nvmeq->qid != NVME_IO_Q)
+		return;
+
+	/* T8132 requires both queue bases after creation, CQ before SQ. */
+	nvme_writeq((ulong)nvmeq->cqes, priv->base + ANS_IOQ_CQ_BASE);
+	nvme_writeq((ulong)nvmeq->sq_cmds, priv->base + ANS_IOQ_SQ_BASE);
+}
+
+static void apple_nvme_cleanup_queue(struct nvme_queue *nvmeq)
+{
+	struct apple_nvme_priv *priv =
+		container_of(nvmeq->dev, struct apple_nvme_priv, ndev);
+
+	free(priv->tcbs[nvmeq->qid]);
+	priv->tcbs[nvmeq->qid] = NULL;
 }
 
 static void apple_nvme_submit_cmd(struct nvme_queue *nvmeq,
@@ -121,14 +153,36 @@ static void apple_nvme_submit_cmd(struct nvme_queue *nvmeq,
 
 	tcb = ((void *)priv->tcbs[nvmeq->qid]) + tail * ANS_NVMMU_TCB_PITCH;
 	memset(tcb, 0, sizeof(*tcb));
-	tcb->opcode = cmd->common.opcode;
-	tcb->flags = ANS_NVMMU_TCB_WRITE | ANS_NVMMU_TCB_READ;
+	if (priv->is_t8132) {
+		tcb->opcode = 0;
+		if (!cmd->common.prp1)
+			tcb->flags = 0;
+		else if (cmd->common.opcode & 1)
+			tcb->flags = ANS_NVMMU_TCB_TO_DEVICE;
+		else
+			tcb->flags = ANS_NVMMU_TCB_FROM_DEVICE;
+	} else {
+		tcb->opcode = cmd->common.opcode;
+		tcb->flags = ANS_NVMMU_TCB_FROM_DEVICE |
+			ANS_NVMMU_TCB_TO_DEVICE;
+	}
 	tcb->slot = tail;
 	tcb->prpl_len = cmd->rw.length;
 	tcb->prp1 = cmd->common.prp1;
 	tcb->prp2 = cmd->common.prp2;
+	flush_dcache_range((ulong)tcb, (ulong)tcb + sizeof(*tcb));
 
 	writel(tail, priv->q_db[nvmeq->qid]);
+}
+
+static void apple_nvme_poll_cmd(struct nvme_queue *nvmeq)
+{
+	struct apple_nvme_priv *priv =
+		container_of(nvmeq->dev, struct apple_nvme_priv, ndev);
+	int ret = apple_rtkit_poll(priv->rtk, 0);
+
+	if (ret && ret != -ETIMEDOUT)
+		debug("%s: RTKit poll returned %d\n", __func__, ret);
 }
 
 static void apple_nvme_complete_cmd(struct nvme_queue *nvmeq,
@@ -141,8 +195,8 @@ static void apple_nvme_complete_cmd(struct nvme_queue *nvmeq,
 
 	tcb = ((void *)priv->tcbs[nvmeq->qid]) + tail * ANS_NVMMU_TCB_PITCH;
 	memset(tcb, 0, sizeof(*tcb));
-	writel(tail, ((void __iomem *)nvmeq->dev->bar) + ANS_NVMMU_TCB_INVAL);
-	readl(((void __iomem *)nvmeq->dev->bar) + ANS_NVMMU_TCB_STAT);
+	writel(tail, priv->nvmmu + ANS_NVMMU_TCB_INVAL);
+	readl(priv->nvmmu + ANS_NVMMU_TCB_STAT);
 
 	if (++tail == nvmeq->q_depth)
 		tail = 0;
@@ -196,101 +250,179 @@ static int apple_nvme_probe(struct udevice *dev)
 	u32 ctrl, stat, phandle;
 	int ret;
 
-	priv->base = dev_read_addr_ptr(dev);
+	priv->is_t8132 = device_is_compatible(dev, "apple,t8132-nvme-ans2");
+	priv->base = dev_remap_addr_name(dev, "nvme");
 	if (!priv->base)
 		return -EINVAL;
 
-	addr = dev_read_addr_index(dev, 1);
+	if (priv->is_t8132) {
+		priv->nvmmu = dev_remap_addr_name(dev, "nvmmu");
+		if (!priv->nvmmu)
+			return -EINVAL;
+	} else {
+		priv->nvmmu = priv->base;
+	}
+
+	addr = dev_read_addr_name(dev, "ans");
 	if (addr == FDT_ADDR_T_NONE)
 		return -EINVAL;
 	priv->asc = map_sysmem(addr, 0);
 
-	ret = reset_get_bulk(dev, &priv->resets);
-	if (ret < 0)
-		return ret;
+	/* Linux owns the sole reset at the T8132 OS boundary. */
+	if (!priv->is_t8132) {
+		ret = reset_get_bulk(dev, &priv->resets);
+		if (ret < 0)
+			return ret;
+	}
 
 	ret = mbox_get_by_index(dev, 0, &priv->chan);
 	if (ret < 0)
-		return ret;
+		goto release_resets;
 
 	ret = dev_read_u32(dev, "apple,sart", &phandle);
 	if (ret < 0)
-		return ret;
+		goto free_mbox;
 
 	of_sart = ofnode_get_by_phandle(phandle);
 	priv->sart = sart_init(of_sart);
-	if (!priv->sart)
-		return -EINVAL;
+	if (!priv->sart) {
+		ret = -EINVAL;
+		goto free_mbox;
+	}
 
 	ctrl = readl(priv->asc + REG_CPU_CTRL);
-	writel(ctrl | REG_CPU_CTRL_RUN, priv->asc + REG_CPU_CTRL);
+	if (!(ctrl & REG_CPU_CTRL_RUN))
+		writel(ctrl | REG_CPU_CTRL_RUN, priv->asc + REG_CPU_CTRL);
 
 	priv->rtk = apple_rtkit_init(&priv->chan, priv, nvme_shmem_setup, nvme_shmem_destroy);
-	if (!priv->rtk)
-		return -ENOMEM;
-
-	ret = apple_rtkit_boot(priv->rtk);
-	if (ret < 0) {
-		printf("%s: NVMe apple_rtkit_boot returned: %d\n", __func__, ret);
-		return ret;
+	if (!priv->rtk) {
+		ret = -ENOMEM;
+		goto free_sart;
 	}
+
+	ret = ctrl & REG_CPU_CTRL_RUN ? apple_rtkit_wake(priv->rtk) :
+		apple_rtkit_boot(priv->rtk);
+	if (ret < 0) {
+		printf("%s: NVMe RTKit start returned: %d\n", __func__, ret);
+		goto free_rtkit;
+	}
+	ret = apple_rtkit_set_ap_power(priv->rtk, APPLE_RTKIT_PWR_STATE_ON);
+	if (ret < 0)
+		goto shutdown_rtkit;
 
 	ret = readl_poll_sleep_timeout(priv->base + ANS_BOOT_STATUS, stat,
 				       (stat == ANS_BOOT_STATUS_OK), 100,
 				       500000);
 	if (ret < 0) {
 		printf("%s: NVMe firmware didn't boot\n", __func__);
-		return -ETIMEDOUT;
+		ret = -ETIMEDOUT;
+		goto shutdown_rtkit;
 	}
 
 	writel(ANS_LINEAR_SQ_CTRL_EN, priv->base + ANS_LINEAR_SQ_CTRL);
-	writel(((ANS_MAX_QUEUE_DEPTH << 16) | ANS_MAX_QUEUE_DEPTH),
+	writel(priv->is_t8132 ?
+	       (((ANS_MAX_QUEUE_DEPTH - 1) << 16) |
+		(ANS_MAX_QUEUE_DEPTH - 1)) :
+	       ((ANS_MAX_QUEUE_DEPTH << 16) | ANS_MAX_QUEUE_DEPTH),
 	       priv->base + ANS_MAX_PEND_CMDS_CTRL);
 
-	writel(readl(priv->base + ANS_UNKNOWN_CTRL) & ~ANS_PRP_NULL_CHECK,
-	       priv->base + ANS_UNKNOWN_CTRL);
+	if (!priv->is_t8132)
+		writel(readl(priv->base + ANS_UNKNOWN_CTRL) &
+		       ~ANS_PRP_NULL_CHECK, priv->base + ANS_UNKNOWN_CTRL);
 
 	strcpy(priv->ndev.vendor, "Apple");
+	if (priv->is_t8132) {
+		priv->ndev.q_depth = ANS_MAX_QUEUE_DEPTH;
+		priv->ndev.admin_q_depth = ANS_MAX_QUEUE_DEPTH;
+		priv->ndev.queue_alignment = SZ_16K;
+		priv->ndev.max_transfer_shift_limit = 12;
+		priv->ndev.quirks = NVME_QUIRK_PREALLOCATE_IO_QUEUE |
+			NVME_QUIRK_SKIP_SET_NUM_QUEUES |
+			NVME_QUIRK_NS_ONE_ONLY |
+			NVME_QUIRK_MINIMAL_QUEUE_FLAGS;
+	}
 
-	writel((ANS_NVMMU_TCB_SIZE / ANS_NVMMU_TCB_PITCH) - 1,
-	       priv->base + ANS_NVMMU_NUM);
-	writel(0, priv->base + ANS_MODESEL);
+	writel(priv->is_t8132 ? ANS_MAX_QUEUE_DEPTH - 1 :
+	       (ANS_NVMMU_TCB_SIZE / ANS_NVMMU_TCB_PITCH) - 1,
+	       priv->nvmmu + ANS_NVMMU_NUM);
+	if (!priv->is_t8132)
+		writel(0, priv->base + ANS_MODESEL);
 
 	priv->ndev.bar = priv->base;
-	return nvme_init(dev);
+	ret = nvme_init(dev);
+	if (!ret)
+		return 0;
+
+shutdown_rtkit:
+	apple_rtkit_shutdown(priv->rtk, APPLE_RTKIT_PWR_STATE_SLEEP);
+free_rtkit:
+	apple_rtkit_free(priv->rtk);
+	priv->rtk = NULL;
+free_sart:
+	sart_free(priv->sart);
+	priv->sart = NULL;
+free_mbox:
+	mbox_free(&priv->chan);
+release_resets:
+	reset_release_bulk(&priv->resets);
+	return ret;
 }
 
 static int apple_nvme_remove(struct udevice *dev)
 {
 	struct apple_nvme_priv *priv = dev_get_priv(dev);
+	struct ofnode_phandle_args args;
 	u32 ctrl;
+	int i, ret, shutdown_ret;
 
-	nvme_shutdown(dev);
+	ret = nvme_shutdown(dev);
 
-	apple_rtkit_shutdown(priv->rtk, APPLE_RTKIT_PWR_STATE_SLEEP);
+	shutdown_ret = apple_rtkit_shutdown(priv->rtk,
+					    APPLE_RTKIT_PWR_STATE_SLEEP);
+	if (!ret)
+		ret = shutdown_ret;
 
 	ctrl = readl(priv->asc + REG_CPU_CTRL);
 	writel(ctrl & ~REG_CPU_CTRL_RUN, priv->asc + REG_CPU_CTRL);
 
 	apple_rtkit_free(priv->rtk);
 	priv->rtk = NULL;
+	mbox_free(&priv->chan);
 
 	sart_free(priv->sart);
 	priv->sart = NULL;
 
-	reset_assert_bulk(&priv->resets);
-	reset_deassert_bulk(&priv->resets);
+	/*
+	 * reset_release_bulk() asserts each reset before freeing it.  Linux
+	 * needs the quiesced ANS domain left deasserted so it can inspect SART
+	 * before its native NVMe driver resets the controller.  Drop only
+	 * U-Boot's ownership here without changing the hardware state.
+	 */
+	for (i = 0; i < priv->resets.count; i++) {
+		shutdown_ret = reset_free(&priv->resets.resets[i]);
+		if (!ret)
+			ret = shutdown_ret;
+	}
+	priv->resets.count = 0;
 
-	return 0;
+	if (!dev_read_phandle_with_args(dev, "resets", "#reset-cells", 0, 0,
+					&args))
+		ofnode_delete_prop(args.node, "apple,always-on");
+
+	return ret;
 }
 
 static const struct nvme_ops apple_nvme_ops = {
 	.setup_queue = apple_nvme_setup_queue,
+	.cleanup_queue = apple_nvme_cleanup_queue,
+	.configure_queue = apple_nvme_configure_queue,
 	.submit_cmd = apple_nvme_submit_cmd,
 	.complete_cmd = apple_nvme_complete_cmd,
+	.poll_cmd = apple_nvme_poll_cmd,
 };
 
 static const struct udevice_id apple_nvme_ids[] = {
+	{ .compatible = "apple,t8132-nvme-ans2" },
 	{ .compatible = "apple,t8103-nvme-ans2" },
 	{ .compatible = "apple,nvme-ans2" },
 	{ /* sentinel */ }
@@ -304,5 +436,6 @@ U_BOOT_DRIVER(apple_nvme) = {
 	.probe = apple_nvme_probe,
 	.remove = apple_nvme_remove,
 	.ops = &apple_nvme_ops,
-	.flags = DM_FLAG_OS_PREPARE,
+	/* Keep SART readable until Linux has attached the ANS power domain. */
+	.flags = DM_FLAG_OS_PREPARE | DM_FLAG_LEAVE_PD_ON,
 };
