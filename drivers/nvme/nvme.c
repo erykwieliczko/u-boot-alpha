@@ -21,8 +21,6 @@
 #define NVME_AQ_DEPTH		2
 #define NVME_SQ_SIZE(depth)	(depth * sizeof(struct nvme_command))
 #define NVME_CQ_SIZE(depth)	(depth * sizeof(struct nvme_completion))
-#define NVME_CQ_ALLOCATION	ALIGN(NVME_CQ_SIZE(NVME_Q_DEPTH), \
-				      ARCH_DMA_MINALIGN)
 #define ADMIN_TIMEOUT		60
 #define IO_TIMEOUT		30
 #define MAX_PRP_POOL		512
@@ -42,6 +40,17 @@ static inline void nvme_invalidate_cache_aligned(uintptr_t addr, int length)
 	uintptr_t end_addr = ALIGN(addr + length, ARCH_DMA_MINALIGN);
 
 	invalidate_dcache_range(start_addr, end_addr);
+}
+
+static size_t nvme_queue_alignment(struct nvme_dev *dev)
+{
+	return max_t(size_t, dev->queue_alignment, ARCH_DMA_MINALIGN);
+}
+
+static size_t nvme_cq_allocation(struct nvme_queue *nvmeq)
+{
+	return ALIGN(NVME_CQ_SIZE(nvmeq->q_depth),
+		     nvme_queue_alignment(nvmeq->dev));
 }
 
 static int nvme_wait_csts(struct nvme_dev *dev, u32 mask, u32 val)
@@ -144,7 +153,7 @@ static u16 nvme_read_completion_status(struct nvme_queue *nvmeq, u16 index)
 	 * as the cache line should never become dirty.
 	 */
 	ulong start = (ulong)&nvmeq->cqes[0];
-	ulong stop = start + NVME_CQ_ALLOCATION;
+	ulong stop = start + nvme_cq_allocation(nvmeq);
 
 	invalidate_dcache_range(start, stop);
 
@@ -195,6 +204,10 @@ static int nvme_submit_sync_cmd(struct nvme_queue *nvmeq,
 	start_time = timer_get_us();
 
 	for (;;) {
+		ops = (struct nvme_ops *)nvmeq->dev->udev->driver->ops;
+		if (ops && ops->poll_cmd)
+			ops->poll_cmd(nvmeq);
+
 		status = nvme_read_completion_status(nvmeq, head);
 		if ((status & 0x01) == phase)
 			break;
@@ -255,12 +268,16 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev,
 		return NULL;
 	memset(nvmeq, 0, sizeof(*nvmeq));
 
-	nvmeq->cqes = (void *)memalign(4096, NVME_CQ_ALLOCATION);
+	size_t alignment = nvme_queue_alignment(dev);
+	size_t cq_allocation = ALIGN(NVME_CQ_SIZE(depth), alignment);
+
+	nvmeq->cqes = (void *)memalign(alignment, cq_allocation);
 	if (!nvmeq->cqes)
 		goto free_nvmeq;
 	memset((void *)nvmeq->cqes, 0, NVME_CQ_SIZE(depth));
 
-	nvmeq->sq_cmds = (void *)memalign(4096, NVME_SQ_SIZE(depth));
+	nvmeq->sq_cmds = (void *)memalign(alignment,
+					 ALIGN(NVME_SQ_SIZE(depth), alignment));
 	if (!nvmeq->sq_cmds)
 		goto free_queue;
 	memset((void *)nvmeq->sq_cmds, 0, NVME_SQ_SIZE(depth));
@@ -276,11 +293,20 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev,
 	dev->queues[qid] = nvmeq;
 
 	ops = (struct nvme_ops *)dev->udev->driver->ops;
-	if (ops && ops->setup_queue)
-		ops->setup_queue(nvmeq);
+	if (ops && ops->setup_queue) {
+		int ret = ops->setup_queue(nvmeq);
+
+		if (ret) {
+			dev->queue_count--;
+			dev->queues[qid] = NULL;
+			goto free_sq;
+		}
+	}
 
 	return nvmeq;
 
+ free_sq:
+	free(nvmeq->sq_cmds);
  free_queue:
 	free((void *)nvmeq->cqes);
  free_nvmeq:
@@ -334,6 +360,11 @@ static int nvme_shutdown_ctrl(struct nvme_dev *dev)
 
 static void nvme_free_queue(struct nvme_queue *nvmeq)
 {
+	struct nvme_ops *ops =
+		(struct nvme_ops *)nvmeq->dev->udev->driver->ops;
+
+	if (ops && ops->cleanup_queue)
+		ops->cleanup_queue(nvmeq);
 	free((void *)nvmeq->cqes);
 	free(nvmeq->sq_cmds);
 	free(nvmeq);
@@ -361,7 +392,7 @@ static void nvme_init_queue(struct nvme_queue *nvmeq, u16 qid)
 	nvmeq->q_db = &dev->dbs[qid * 2 * dev->db_stride];
 	memset((void *)nvmeq->cqes, 0, NVME_CQ_SIZE(nvmeq->q_depth));
 	flush_dcache_range((ulong)nvmeq->cqes,
-			   (ulong)nvmeq->cqes + NVME_CQ_ALLOCATION);
+			   (ulong)nvmeq->cqes + nvme_cq_allocation(nvmeq));
 	dev->online_queues++;
 }
 
@@ -394,7 +425,7 @@ static int nvme_configure_admin_queue(struct nvme_dev *dev)
 
 	nvmeq = dev->queues[NVME_ADMIN_Q];
 	if (!nvmeq) {
-		nvmeq = nvme_alloc_queue(dev, 0, NVME_AQ_DEPTH);
+		nvmeq = nvme_alloc_queue(dev, 0, dev->admin_q_depth);
 		if (!nvmeq)
 			return -ENOMEM;
 	}
@@ -408,6 +439,13 @@ static int nvme_configure_admin_queue(struct nvme_dev *dev)
 	dev->ctrl_config |= (page_shift - 12) << NVME_CC_MPS_SHIFT;
 	dev->ctrl_config |= NVME_CC_ARB_RR | NVME_CC_SHN_NONE;
 	dev->ctrl_config |= NVME_CC_IOSQES | NVME_CC_IOCQES;
+
+	if ((dev->quirks & NVME_QUIRK_PREALLOCATE_IO_QUEUE) &&
+	    !dev->queues[NVME_IO_Q] &&
+	    !nvme_alloc_queue(dev, NVME_IO_Q, dev->q_depth)) {
+		result = -ENOMEM;
+		goto free_nvmeq;
+	}
 
 	writel(aqa, &dev->bar->aqa);
 	nvme_writeq((ulong)nvmeq->sq_cmds, &dev->bar->asq);
@@ -433,7 +471,10 @@ static int nvme_alloc_cq(struct nvme_dev *dev, u16 qid,
 			    struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
+	int flags = NVME_QUEUE_PHYS_CONTIG;
+
+	if (!(dev->quirks & NVME_QUIRK_MINIMAL_QUEUE_FLAGS))
+		flags |= NVME_CQ_IRQ_ENABLED;
 
 	memset(&c, 0, sizeof(c));
 	c.create_cq.opcode = nvme_admin_create_cq;
@@ -450,7 +491,10 @@ static int nvme_alloc_sq(struct nvme_dev *dev, u16 qid,
 			    struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_SQ_PRIO_MEDIUM;
+	int flags = NVME_QUEUE_PHYS_CONTIG;
+
+	if (!(dev->quirks & NVME_QUIRK_MINIMAL_QUEUE_FLAGS))
+		flags |= NVME_SQ_PRIO_MEDIUM;
 
 	memset(&c, 0, sizeof(c));
 	c.create_sq.opcode = nvme_admin_create_sq;
@@ -555,6 +599,7 @@ int nvme_set_features(struct nvme_dev *dev, unsigned fid, unsigned dword11,
 static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 {
 	struct nvme_dev *dev = nvmeq->dev;
+	struct nvme_ops *ops;
 	int result;
 
 	nvmeq->cq_vector = qid - 1;
@@ -567,6 +612,10 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 		goto release_cq;
 
 	nvme_init_queue(nvmeq, qid);
+
+	ops = (struct nvme_ops *)dev->udev->driver->ops;
+	if (ops && ops->configure_queue)
+		ops->configure_queue(nvmeq);
 
 	return result;
 
@@ -618,10 +667,12 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	int result;
 
 	nr_io_queues = 1;
-	result = nvme_set_queue_count(dev, nr_io_queues);
-	if (result <= 0) {
-		log_debug("Cannot set queue count (err=%dE)\n", result);
-		return result;
+	if (!(dev->quirks & NVME_QUIRK_SKIP_SET_NUM_QUEUES)) {
+		result = nvme_set_queue_count(dev, nr_io_queues);
+		if (result <= 0) {
+			log_debug("Cannot set queue count (err=%dE)\n", result);
+			return result;
+		}
 	}
 
 	dev->max_qid = nr_io_queues;
@@ -681,6 +732,9 @@ static int nvme_get_info_from_identify(struct nvme_dev *dev)
 	}
 
 	free(ctrl);
+	if (dev->max_transfer_shift_limit)
+		dev->max_transfer_shift = min(dev->max_transfer_shift,
+					      dev->max_transfer_shift_limit);
 	return 0;
 }
 
@@ -735,6 +789,8 @@ static int nvme_blk_probe(struct udevice *udev)
 	ns->dev = ndev;
 	/* extract the namespace id from the block device name */
 	ns->ns_id = trailing_strtol(udev->name);
+	/* Even the namespace-one-only path must report real disk geometry. */
+	memset(id, 0, sizeof(*id));
 	if (nvme_identify(ndev, ns->ns_id, 0, (dma_addr_t)(long)id)) {
 		free(id);
 		return -EIO;
@@ -774,6 +830,8 @@ static ulong nvme_blk_rw(struct udevice *udev, lbaint_t blknr,
 	u64 slba = blknr;
 	u16 lbas = 1 << (dev->max_transfer_shift - ns->lba_shift);
 	u64 total_lbas = blkcnt;
+
+	memset(&c, 0, sizeof(c));
 
 	flush_dcache_range((unsigned long)buffer,
 			   (unsigned long)buffer + total_len);
@@ -831,9 +889,23 @@ static ulong nvme_blk_write(struct udevice *udev, lbaint_t blknr,
 	return nvme_blk_rw(udev, blknr, blkcnt, (void *)buffer, false);
 }
 
+static int nvme_blk_flush(struct udevice *udev)
+{
+	struct nvme_ns *ns = dev_get_priv(udev);
+	struct nvme_command c;
+
+	memset(&c, 0, sizeof(c));
+	c.common.opcode = nvme_cmd_flush;
+	c.common.nsid = cpu_to_le32(ns->ns_id);
+
+	return nvme_submit_sync_cmd(ns->dev->queues[NVME_IO_Q], &c, NULL,
+				    IO_TIMEOUT);
+}
+
 static const struct blk_ops nvme_blk_ops = {
 	.read	= nvme_blk_read,
 	.write	= nvme_blk_write,
+	.flush	= nvme_blk_flush,
 };
 
 U_BOOT_DRIVER(nvme_blk) = {
@@ -867,7 +939,12 @@ int nvme_init(struct udevice *udev)
 	memset(ndev->queues, 0, NVME_Q_NUM * sizeof(struct nvme_queue *));
 
 	ndev->cap = nvme_readq(&ndev->bar->cap);
-	ndev->q_depth = min_t(int, NVME_CAP_MQES(ndev->cap) + 1, NVME_Q_DEPTH);
+	ndev->q_depth = min_t(int, NVME_CAP_MQES(ndev->cap) + 1,
+			      ndev->q_depth ?: NVME_Q_DEPTH);
+	ndev->admin_q_depth = min_t(int, NVME_CAP_MQES(ndev->cap) + 1,
+				    ndev->admin_q_depth ?: NVME_AQ_DEPTH);
+	if (!ndev->queue_alignment)
+		ndev->queue_alignment = 4096;
 	ndev->db_stride = 1 << NVME_CAP_STRIDE(ndev->cap);
 	ndev->dbs = ((void __iomem *)ndev->bar) + 4096;
 
@@ -892,7 +969,11 @@ int nvme_init(struct udevice *udev)
 		goto free_prp_pool;
 	}
 
-	nvme_get_info_from_identify(ndev);
+	ret = nvme_get_info_from_identify(ndev);
+	if (ret)
+		goto free_prp_pool;
+	if (ndev->quirks & NVME_QUIRK_NS_ONE_ONLY)
+		ndev->nn = 1;
 
 	/* Create a blk device for each namespace */
 
@@ -906,15 +987,18 @@ int nvme_init(struct udevice *udev)
 		struct udevice *ns_udev;
 		char name[20];
 
-		memset(id, 0, sizeof(*id));
-		if (nvme_identify(ndev, i, 0, (dma_addr_t)(long)id)) {
-			ret = -EIO;
-			goto free_id;
-		}
+		if (!(ndev->quirks & NVME_QUIRK_NS_ONE_ONLY)) {
+			memset(id, 0, sizeof(*id));
+			if (nvme_identify(ndev, i, 0,
+					  (dma_addr_t)(long)id)) {
+				ret = -EIO;
+				goto free_id;
+			}
 
-		/* skip inactive namespace */
-		if (!id->nsze)
-			continue;
+			/* skip inactive namespace */
+			if (!id->nsze)
+				continue;
+		}
 
 		/*
 		 * Encode the namespace id to the device name so that
@@ -945,8 +1029,10 @@ int nvme_init(struct udevice *udev)
 free_id:
 	free(id);
 free_prp_pool:
+	nvme_disable_ctrl(ndev);
 	free((void *)ndev->prp_pool);
 free_queue:
+	nvme_free_queues(ndev, 0);
 	free((void *)ndev->queues);
 free_nvme:
 	return ret;
@@ -955,13 +1041,22 @@ free_nvme:
 int nvme_shutdown(struct udevice *udev)
 {
 	struct nvme_dev *ndev = dev_get_priv(udev);
-	int ret;
+	int ret, disable_ret;
 
 	ret = nvme_shutdown_ctrl(ndev);
-	if (ret < 0) {
+	if (ret < 0)
 		printf("Error: %s: Shutdown timed out!\n", udev->name);
-		return ret;
-	}
 
-	return nvme_disable_ctrl(ndev);
+	disable_ret = nvme_disable_ctrl(ndev);
+	if (!ret)
+		ret = disable_ret;
+
+	nvme_free_queues(ndev, 0);
+	free(ndev->prp_pool);
+	ndev->prp_pool = NULL;
+	ndev->prp_entry_num = 0;
+	free(ndev->queues);
+	ndev->queues = NULL;
+
+	return ret;
 }

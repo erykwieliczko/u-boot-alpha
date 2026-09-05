@@ -605,6 +605,10 @@ struct nvme_dev {
 	unsigned online_queues;
 	unsigned max_qid;
 	int q_depth;
+	int admin_q_depth;
+	u32 queue_alignment;
+	u32 quirks;
+	u32 max_transfer_shift_limit;
 	u32 db_stride;
 	u32 ctrl_config;
 	struct nvme_bar __iomem *bar;
@@ -622,6 +626,11 @@ struct nvme_dev {
 	u32 prp_entry_num;
 	u32 nn;
 };
+
+#define NVME_QUIRK_PREALLOCATE_IO_QUEUE	BIT(0)
+#define NVME_QUIRK_SKIP_SET_NUM_QUEUES	BIT(1)
+#define NVME_QUIRK_NS_ONE_ONLY		BIT(2)
+#define NVME_QUIRK_MINIMAL_QUEUE_FLAGS	BIT(3)
 
 /* Admin queue and a single I/O queue. */
 enum nvme_queue_id {
@@ -673,6 +682,16 @@ struct nvme_ops {
 	 */
 	int (*setup_queue)(struct nvme_queue *nvmeq);
 	/**
+	 * cleanup_queue - Release controller-specific queue resources.
+	 */
+	void (*cleanup_queue)(struct nvme_queue *nvmeq);
+	/**
+	 * configure_queue - Program controller-specific queue addresses.
+	 *
+	 * Called after the standard Create CQ and Create SQ commands complete.
+	 */
+	void (*configure_queue)(struct nvme_queue *nvmeq);
+	/**
 	 * submit_cmd - Controller-specific NVM Express command submission.
 	 *
 	 * If this function pointer is set to NULL, normal command
@@ -689,6 +708,10 @@ struct nvme_ops {
 	 * @cmd:   NVM Express command
 	 */
 	void (*complete_cmd)(struct nvme_queue *nvmeq, struct nvme_command *cmd);
+	/**
+	 * poll_cmd - Service controller firmware while waiting for completion.
+	 */
+	void (*poll_cmd)(struct nvme_queue *nvmeq);
 };
 
 /**
