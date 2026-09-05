@@ -290,8 +290,6 @@ static efi_status_t EFIAPI efi_disk_write_blocks(struct efi_block_io *this,
  * This function implements the FlushBlocks service of the
  * EFI_BLOCK_IO_PROTOCOL.
  *
- * As we always write synchronously nothing is done here.
- *
  * See the Unified Extensible Firmware Interface (UEFI) specification for
  * details.
  *
@@ -300,7 +298,22 @@ static efi_status_t EFIAPI efi_disk_write_blocks(struct efi_block_io *this,
  */
 static efi_status_t EFIAPI efi_disk_flush_blocks(struct efi_block_io *this)
 {
+	struct efi_disk_obj *diskobj;
+	struct udevice *dev;
+	int ret;
+
 	EFI_ENTRY("%p", this);
+	diskobj = container_of(this, struct efi_disk_obj, ops);
+	dev = diskobj->header.dev;
+	if (device_get_uclass_id(dev) == UCLASS_PARTITION)
+		dev = dev_get_parent(dev);
+	if (device_get_uclass_id(dev) != UCLASS_BLK)
+		return EFI_EXIT(EFI_DEVICE_ERROR);
+
+	ret = blk_flush(dev);
+	if (ret && ret != -ENOSYS)
+		return EFI_EXIT(EFI_DEVICE_ERROR);
+
 	return EFI_EXIT(EFI_SUCCESS);
 }
 
