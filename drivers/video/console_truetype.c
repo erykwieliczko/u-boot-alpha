@@ -407,7 +407,7 @@ static int console_truetype_putc_xy(struct udevice *dev, uint x, uint y,
 					if (vid_priv->colour_bg)
 						val = 255 - val;
 					if (vid_priv->format == VIDEO_X2R10G10B10)
-						out = val << 2 | val << 12 | val << 22;
+						out = video_pack_x2r10g10b10(val, val, val);
 					else
 						out = val | val << 8 | val << 16;
 					if (vid_priv->colour_fg)
@@ -1004,7 +1004,7 @@ static int truetype_set_cursor_visible(struct udevice *dev, bool visible,
 					int out;
 
 					if (vid_priv->format == VIDEO_X2R10G10B10)
-						out = val << 2 | val << 12 | val << 22;
+						out = video_pack_x2r10g10b10(val, val, val);
 					else
 						out = val | val << 8 | val << 16;
 					if (vid_priv->colour_fg)
