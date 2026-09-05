@@ -21,6 +21,7 @@
 #include <dm.h>
 #include <env.h>
 #include <env_internal.h>
+#include <elf.h>
 #include <event.h>
 #include <fdtdec.h>
 #include <fs.h>
@@ -52,6 +53,27 @@
 #include <linux/log2.h>
 
 DECLARE_GLOBAL_DATA_PTR;
+
+#if CONFIG_IS_ENABLED(ARCH_APPLE)
+static int apple_relocate_in_place(void)
+{
+	Elf64_Rela *rel;
+	ulong base;
+
+	if (!CONFIG_IS_ENABLED(SKIP_RELOCATE))
+		return 0;
+
+	base = (ulong)_start - CONFIG_TEXT_BASE;
+	for (rel = (Elf64_Rela *)__rel_dyn_start;
+	     rel < (Elf64_Rela *)__rel_dyn_end; rel++) {
+		if (ELF64_R_TYPE(rel->r_info) != R_AARCH64_RELATIVE)
+			continue;
+		*(ulong *)(base + rel->r_offset) = base + rel->r_addend;
+	}
+
+	return 0;
+}
+#endif
 
 /*
  * Why is gd allocated a register? Prior to reloc it might be better to
@@ -555,14 +577,23 @@ static int reserve_global_data(void)
 static int reserve_fdt(void)
 {
 	if (!IS_ENABLED(CONFIG_OF_EMBED)) {
+		ulong fdt_pad = 0;
+
 		/*
 		 * If the device tree is sitting immediately above our image
 		 * then we must relocate it. If it is embedded in the data
 		 * section, then it will be relocated with other data.
+		 *
+		 * The Apple MTP helper adds reservations for RTKit shared
+		 * buffers while probing.  Keep the configured FDT padding in
+		 * the relocated control tree so those reservations can be
+		 * published before the EFI handoff.
 		 */
 		if (gd->fdt_blob) {
+			if (CONFIG_IS_ENABLED(APPLE_MTP_KEYB))
+				fdt_pad = CONFIG_SYS_FDT_PAD;
 			gd->boardf->fdt_size =
-				ALIGN(fdt_totalsize(gd->fdt_blob), 32);
+				ALIGN(fdt_totalsize(gd->fdt_blob) + fdt_pad, 32);
 
 			gd->start_addr_sp = reserve_stack_aligned(
 				gd->boardf->fdt_size);
@@ -654,8 +685,9 @@ static int reloc_fdt(void)
 {
 	if (!IS_ENABLED(CONFIG_OF_EMBED)) {
 		if (gd->boardf->new_fdt) {
-			memcpy(gd->boardf->new_fdt, gd->fdt_blob,
-			       fdt_totalsize(gd->fdt_blob));
+			if (fdt_open_into(gd->fdt_blob, gd->boardf->new_fdt,
+					  gd->boardf->fdt_size))
+				return -EINVAL;
 			gd->fdt_blob = gd->boardf->new_fdt;
 		}
 	}
@@ -882,6 +914,10 @@ static void initcall_run_f(void)
 	 * Please do not add logic to this function (variables, if (), etc.).
 	 * For simplicity it should remain an ordered list of function calls.
 	 */
+#if CONFIG_IS_ENABLED(ARCH_APPLE)
+	/* The raw relocation table aliases BSS and must be consumed first. */
+	INITCALL(apple_relocate_in_place);
+#endif
 	INITCALL(setup_mon_len);
 #if CONFIG_IS_ENABLED(OF_CONTROL)
 	INITCALL(fdtdec_setup);

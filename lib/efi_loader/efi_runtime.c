@@ -750,10 +750,12 @@ void efi_runtime_relocate(ulong offset, struct efi_mem_desc *map)
 	debug("%s: Relocating to offset=%lx\n", __func__, offset);
 	for (; (uintptr_t)rel < (uintptr_t)__efi_runtime_rel_stop; rel++) {
 		ulong base = CONFIG_TEXT_BASE;
+		ulong image_base = gd->flags & GD_FLG_SKIP_RELOC ?
+				   (ulong)_start : gd->relocaddr;
 		ulong *p;
 		ulong newaddr;
 
-		p = (void*)((ulong)rel->offset - base) + gd->relocaddr;
+		p = (void *)((ulong)rel->offset - base) + image_base;
 
 		/*
 		 * The runtime services table is updated in

@@ -51,6 +51,16 @@ void main_loop(void)
 
 	cli_init();
 
+	/* A preloaded image is already reserved and needs no bootflow probing. */
+	if (IS_ENABLED(CONFIG_APPLE_PRELOADED_EFI)) {
+		ulong image_addr = env_get_hex("preloaded_efi_addr", 0);
+		ulong image_size = env_get_hex("preloaded_efi_size", 0);
+
+		if (image_addr && image_size)
+			efi_binary_run((void *)(uintptr_t)image_addr, image_size,
+				       EFI_FDT_USE_INTERNAL, NULL, 0);
+	}
+
 	if (IS_ENABLED(CONFIG_USE_PREBOOT))
 		run_preboot_environment_command();
 
