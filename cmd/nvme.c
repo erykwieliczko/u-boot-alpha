@@ -17,6 +17,19 @@ static int do_nvme(struct cmd_tbl *cmdtp, int flag, int argc,
 	int ret;
 
 	if (argc == 2) {
+		if (!strcmp(argv[1], "flush")) {
+			struct udevice *udev;
+
+			ret = blk_get_device(UCLASS_NVME, nvme_curr_dev,
+					     &udev);
+			if (!ret)
+				ret = blk_flush(udev);
+			if (ret) {
+				printf("NVMe flush failed: %d\n", ret);
+				return CMD_RET_FAILURE;
+			}
+			return CMD_RET_SUCCESS;
+		}
 		if (strncmp(argv[1], "scan", 4) == 0) {
 			ret = nvme_scan_namespace();
 			if (ret)
@@ -48,6 +61,7 @@ U_BOOT_CMD(
 	"nvme detail - show details of current NVMe device\n"
 	"nvme info - show all available NVMe devices\n"
 	"nvme device [dev] - show or set current NVMe device\n"
+	"nvme flush - flush writes on the current NVMe device to media\n"
 	"nvme part [dev] - print partition table of one or all NVMe devices\n"
 	"nvme read addr blk# cnt - read `cnt' blocks starting at block\n"
 	"     `blk#' to memory address `addr'\n"
