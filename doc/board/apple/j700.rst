@@ -7,7 +7,9 @@ This is a **console bring-up** T8140/A18 Pro configuration, not a full
 platform port. It retains iBoot's scanout through m1n1 and exposes U-Boot's
 video, built-in keyboard and physical UART consoles, with manually probed ANS
 storage. USB, Linux boot, cold UART initialization and system reset are not
-provided by this configuration.
+provided by this configuration. The experimental ``j700-first-light/`` fixture
+and ``tools/apple_j700_first_light.py`` extend the handoff for a RAM-only,
+single-CPU Linux/BusyBox test; see that fixture's README for its limitations.
 
 Build and package
 -----------------

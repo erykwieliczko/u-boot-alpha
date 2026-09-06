@@ -1,0 +1,11 @@
+#!/bin/sh
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+echo '<6>NEO_INITRAMFS: Linux reached BusyBox userspace.' > /dev/kmsg
+/bin/busybox uname -a
+/bin/busybox cat /proc/cpuinfo
+/bin/busybox sleep 2
+echo '<6>NEO_INITRAMFS: two-second userspace timer completed.' > /dev/kmsg
+echo 'Neo Linux RAM-only shell. No disks mounted; input drivers are not enabled yet.'
+exec /bin/sh

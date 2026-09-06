@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: GPL-2.0+ OR MIT */
+/* Experimental single-CPU Linux extension to our tested U-Boot handoff. */
+#include "arch/arm/dts/t8140-j700.dts"
+#include <dt-bindings/interrupt-controller/apple-aic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+    cpus {
+        #address-cells = <2>;
+        #size-cells = <0>;
+        cpu@0 {
+            compatible = "apple,tahiti";
+            device_type = "cpu";
+            /* Filled from MPIDR_EL1 by m1n1; not an ADT logical CPU ID. */
+            reg = <0 0>;
+        };
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+        interrupt-parent = <&aic>;
+        interrupt-names = "phys", "virt", "hyp-phys", "hyp-virt";
+        interrupts = <AIC_FIQ AIC_TMR_GUEST_PHYS IRQ_TYPE_LEVEL_HIGH>,
+                     <AIC_FIQ AIC_TMR_GUEST_VIRT IRQ_TYPE_LEVEL_HIGH>,
+                     <AIC_FIQ AIC_TMR_HV_PHYS IRQ_TYPE_LEVEL_HIGH>,
+                     <AIC_FIQ AIC_TMR_HV_VIRT IRQ_TYPE_LEVEL_HIGH>;
+    };
+};
+
+&{/soc} {
+    /* Captured J700 ADT: config 0x10000, iack 0x40000, stride 0x4a00;
+     * cap0/max IRQ registers 4/12. Same register layout as the existing AIC3.
+     */
+    aic: interrupt-controller@301000000 {
+        compatible = "apple,t8140-aic3", "apple,t8122-aic3";
+        reg = <3 0x01000000 0 0x40000>, <3 0x01040000 0 0x4000>;
+        interrupt-controller;
+        #interrupt-cells = <3>;
+        #address-cells = <0>;
+    };
+};
