@@ -80,6 +80,7 @@ struct apple_mtp_kbd_priv {
 	bool retention_capable;
 	bool stm_optional;
 	bool retained;
+	bool handoff_u32;
 	bool keyboard_enabled;
 	bool shutting_down;
 
@@ -646,6 +647,14 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 	}
 	priv->retention_capable =
 		apple_rtkit_helper_can_retain(priv->helper);
+	{
+		int size;
+
+		/* A preallocated word lets flat-DT handoff preserve node offsets. */
+		priv->handoff_u32 =
+			ofnode_get_property(priv->helper_node, MTP_INHERITED_PROP, &size) &&
+			size == sizeof(u32);
+	}
 
 	priv->frame_capacity = priv->fifo_size +
 			       sizeof(struct apple_mtp_header) + sizeof(u32);
@@ -680,8 +689,8 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 	if (priv->retention_capable) {
 		/*
 		 * M3 can quiesce MTP and let Linux create a fresh session.
-		 * J713 firmware crashes during that wake transition, so retain
-		 * this proven session and every buffer referenced by it.
+		 * Retention-capable platforms keep this working session and all
+		 * referenced buffers rather than restart firmware at this boundary.
 		 */
 		ret = apple_rtkit_helper_retain(priv->helper);
 		if (ret)
@@ -693,8 +702,9 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 		 * ExitBootServices. Publish ownership before that copy; removal
 		 * below completes FIFO replay and mirrors a private EFI tree.
 		 */
-		ret = ofnode_write_prop(priv->helper_node, MTP_INHERITED_PROP,
-					NULL, 0, true);
+		ret = priv->handoff_u32 ?
+			ofnode_write_u32(priv->helper_node, MTP_INHERITED_PROP, 1) :
+			ofnode_write_prop(priv->helper_node, MTP_INHERITED_PROP, NULL, 0, true);
 		if (ret)
 			goto err_release;
 	}
@@ -710,8 +720,12 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 	return 0;
 
 err_marker:
-	if (priv->retained)
-		ofnode_delete_prop(priv->helper_node, MTP_INHERITED_PROP);
+	if (priv->retained) {
+		if (priv->handoff_u32)
+			ofnode_write_u32(priv->helper_node, MTP_INHERITED_PROP, 0);
+		else
+			ofnode_delete_prop(priv->helper_node, MTP_INHERITED_PROP);
+	}
 err_release:
 	if (priv->retained) {
 		apple_rtkit_helper_release(priv->helper);
@@ -771,8 +785,9 @@ static int apple_mtp_kbd_remove(struct udevice *dev)
 	}
 
 	if (priv->retained) {
-		ret = ofnode_write_prop(priv->helper_node, MTP_INHERITED_PROP,
-					NULL, 0, true);
+		ret = priv->handoff_u32 ?
+			ofnode_write_u32(priv->helper_node, MTP_INHERITED_PROP, 1) :
+			ofnode_write_prop(priv->helper_node, MTP_INHERITED_PROP, NULL, 0, true);
 		if (ret) {
 			dev_err(dev, "control FDT marker failed (%d)\n", ret);
 			return ret;
@@ -804,8 +819,9 @@ static int apple_mtp_kbd_remove(struct udevice *dev)
 					return offset;
 				}
 
-				ret = fdt_setprop(efi_fdt, offset,
-						  MTP_INHERITED_PROP, NULL, 0);
+				ret = priv->handoff_u32 ?
+					fdt_setprop_u32(efi_fdt, offset, MTP_INHERITED_PROP, 1) :
+					fdt_setprop(efi_fdt, offset, MTP_INHERITED_PROP, NULL, 0);
 				if (ret) {
 					dev_err(dev,
 						"EFI FDT marker failed (%d)\n",

@@ -4,9 +4,9 @@ J700 Linux first light (experimental)
 This fixture boots unmodified GRUB followed by a single-CPU Linux kernel and
 embedded BusyBox. It is not a production platform DT, installer or replacement
 for installed boot files. The sparse U-Boot tree is deliberately retained;
-Linux storage, keyboard, touchpad, networking, power management, KVM and PMU
-drivers are not enabled. A visible shell is not yet an interactive Linux
-console: the inherited UART implementation here is an early printk console.
+Linux storage, touchpad, networking, platform power management, KVM and PMU
+drivers are not enabled. The built-in keyboard uses Linux DockChannel HID and
+the Apple HID driver; physical UART remains an output-only early printk console.
 
 Required sibling repositories are m1n1-alpha, linux-alpha and grub-alpha.
 Build the J700 U-Boot configuration and ARM64 EFI GRUB first, as described in
@@ -106,5 +106,63 @@ chainload reservation. EFI also exposes these firmware ranges as reserved
 memory. Audit and normalize this map before production or broader peripheral
 bring-up; first-light success does not validate firmware ownership transfer.
 
-No native NVMe/Linux disk takeover, physical IRQ device, SMP/IPI, KVM/guest
-timer, PMU, suspend or shutdown qualification is implied by this fixture.
+No native NVMe/Linux disk takeover, SMP/IPI, KVM/guest timer, PMU, suspend or
+shutdown qualification is implied by this fixture.
+
+Linux keyboard extension
+------------------------
+
+The input extension describes MTP mailbox IRQs 1152..1155 in semantic order,
+DockChannel parent IRQ 1137 and local TX/RX IRQs 2/3, and DART SID 0. The
+``keyboard`` alias now addresses the HID keyboard child so stage2 can pass the
+actual layout. ``apple,no-stm`` makes identity available without waiting for
+an STM interface which this firmware does not expose. Product, version and
+serial remain unknown rather than borrowing another machine's identity.
+The firmware's HID descriptor, not a fixed boot-keyboard packet decoder,
+controls Linux report parsing.
+
+J700 currently retains the working U-Boot MTP session. All AP-allocated RTKit
+buffers are reserved before EFI copies the FDT. At ExitBootServices the input
+consumer is removed and discovery is replayed, without stopping MTP. The
+preallocated 32-bit ``linux-enablement-mac,rtkit-inherited`` word changes from
+zero to one without moving flat-DT device offsets. Linux also continues to
+accept the existing empty boolean marker used by J713.
+
+The DART's preallocated ``linux-enablement-mac,retained-bypass`` word changes
+from zero to one for the already-validated SID 0 bypass session. Linux verifies
+that SID 0 really is in bypass with no valid TTBR, preserves it without reset,
+and attaches an identity domain. This is not translated DMA isolation. Native
+translated takeover, additional streams, domain replacement and suspend are
+not supported by this retained profile. Other Apple DARTs retain their existing
+initialization. The Linux inherited helper currently consumes no RTKit IPC;
+this is FIFO ownership transfer, not a complete active RTKit session import.
+
+Stage2 must describe MTP firmware using the ADT **remap** addresses, not the
+ASC's internal firmware virtual addresses. An earlier tree wrongly requested
+translated IOMMU mappings using those internal VAs. Linux correctly rejected
+combining that description with the live identity domain.
+
+On 2026-09-06 the corrected retained chain reached ``/init`` and registered
+``Apple MTP keyboard`` through the Apple HID driver. No firmware crash, DART
+fault or kernel oops was logged in that boot. The operator subsequently
+confirmed that the physical keyboard works in the Linux shell. Individual
+modifier and navigation keys were not separately reported. For future tests,
+``echo KEYBOARD_OK > /dev/kmsg`` provides a UART-visible confirmation.
+
+The final follow-up guards against replacing or suspending the retained DART
+domain and clears the handoff word on U-Boot probe rollback. Those defensive
+changes were build-tested after the successful hardware run, not reboot-tested.
+U-Boot M1 and J713 configurations also rebuilt successfully; that is compile
+coverage, not a hardware regression test on those machines.
+
+Stopped-handoff experiments, including reserved OSLog import and endpoint and
+power-request comparisons, failed before the final remap correction. They are
+not included in this profile. This does **not** establish that Neo firmware
+fundamentally cannot restart: a future native takeover must retest with the
+correct DMA description rather than assume that conclusion.
+
+The kernel also handles the no-IPI first-light profile through the existing
+timer-tick IRQ-work fallback. A separate two-core ARM64/GICv3 QEMU regression
+test exercised normal IPIs, including IRQ work; it was not an emulation or
+keyboard test of Neo. Existing MTP frame/Neo report unit tests passed (4), and
+m1n1 Python tests passed (10, with 6 toolchain-dependent skips).

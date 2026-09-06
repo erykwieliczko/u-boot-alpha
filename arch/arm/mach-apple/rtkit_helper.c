@@ -115,7 +115,7 @@ static void shmem_destroy(void *cookie, struct apple_rtkit_buffer *buf)
 static int rtkit_helper_probe(struct udevice *dev)
 {
 	struct rtkit_helper_priv *priv = dev_get_priv(dev);
-	bool running;
+	bool running, wake;
 	u32 ctrl;
 	int ret;
 
@@ -124,11 +124,12 @@ static int rtkit_helper_probe(struct udevice *dev)
 		return -EINVAL;
 
 	/*
-	 * T8132 firmware cannot be restarted at the OS boundary. Keep this as
-	 * compatible data so later SoCs can opt in without board-name checks.
+	 * Keep the working T8132/T8140 sessions at the OS boundary. This is
+	 * independent of whether initial discovery needs wake (T8132) or boot.
 	 */
 	priv->handoff_capable =
-		device_is_compatible(dev, "apple,t8132-rtk-helper-asc4");
+		device_is_compatible(dev, "apple,t8132-rtk-helper-asc4") ||
+		device_is_compatible(dev, "apple,t8140-rtk-helper-asc4");
 
 	ret = mbox_get_by_index(dev, 0, &priv->chan);
 	if (ret < 0)
@@ -142,11 +143,12 @@ static int rtkit_helper_probe(struct udevice *dev)
 	if (!priv->rtk)
 		return -ENOMEM;
 
-	ret = running && priv->handoff_capable ?
+	wake = running && device_is_compatible(dev, "apple,t8132-rtk-helper-asc4");
+	ret = wake ?
 		apple_rtkit_wake(priv->rtk) : apple_rtkit_boot(priv->rtk);
 	if (ret < 0) {
 		printf("%s: Helper RTKit %s returned: %d\n", __func__,
-		       running && priv->handoff_capable ? "wake" : "boot", ret);
+		       wake ? "wake" : "boot", ret);
 		goto err_free;
 	}
 
@@ -204,6 +206,7 @@ bool apple_rtkit_helper_can_retain(struct udevice *dev)
 int apple_rtkit_helper_retain(struct udevice *dev)
 {
 	struct rtkit_helper_priv *priv;
+	int ret;
 
 	if (!dev || !device_active(dev))
 		return -ENODEV;
@@ -213,6 +216,14 @@ int apple_rtkit_helper_retain(struct udevice *dev)
 		return -ENODEV;
 	if (!priv->handoff_capable)
 		return -EOPNOTSUPP;
+	if (device_is_compatible(dev, "apple,t8140-rtk-helper-asc4")) {
+		if (!dev->iommu || !device_is_compatible(dev->iommu, "apple,t8140-dart"))
+			return -ENODEV;
+		ret = ofnode_write_u32(dev_ofnode(dev->iommu),
+				       "linux-enablement-mac,retained-bypass", 1);
+		if (ret)
+			return ret;
+	}
 
 	priv->retain = true;
 	dev_or_flags(dev, DM_FLAG_LEAVE_PD_ON);
@@ -228,6 +239,9 @@ void apple_rtkit_helper_release(struct udevice *dev)
 
 	priv = dev_get_priv(dev);
 	priv->retain = false;
+	if (dev->iommu && device_is_compatible(dev, "apple,t8140-rtk-helper-asc4"))
+		ofnode_write_u32(dev_ofnode(dev->iommu),
+				 "linux-enablement-mac,retained-bypass", 0);
 	dev_bic_flags(dev, DM_FLAG_LEAVE_PD_ON);
 }
 

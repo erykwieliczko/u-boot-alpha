@@ -348,6 +348,8 @@ static int apple_dart_remove(struct udevice *dev)
 	int sid, i;
 
 	if (priv->stream_bypass) {
+		if (dev_read_u32_default(dev, "linux-enablement-mac,retained-bypass", 0))
+			return 0;
 		for (sid = 0; sid < priv->nsid; sid++) {
 			if (priv->connected & BIT(sid))
 				writel(priv->saved_tcr[sid], priv->base + DART_TCR(priv, sid));

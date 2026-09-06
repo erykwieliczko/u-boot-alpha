@@ -54,6 +54,12 @@ def main():
     make = ['make', '-C', linux, f'O={work / "linux-build"}',
             'ARCH=arm64', 'CROSS_COMPILE=aarch64-linux-gnu-']
     run(*make, f'KCONFIG_ALLCONFIG={config}', 'allnoconfig')
+    enabled = (work / 'linux-build/.config').read_text().splitlines()
+    for feature in ('INPUT_EVDEV', 'HID_APPLE', 'HID_DOCKCHANNEL',
+                    'APPLE_DOCKCHANNEL', 'APPLE_DART', 'APPLE_MAILBOX',
+                    'APPLE_RTKIT_HELPER', 'VT_CONSOLE', 'FB_SIMPLE'):
+        if f'CONFIG_{feature}=y' not in enabled:
+            raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
     run(*make, f'-j{args.j}', 'Image')
     run('make', '-C', m1n1, f'-j{args.j}', 'RELEASE=1', 'CHAINLOADING=0',
         'USE_CLANG=1', 'BUILDSTD=1')

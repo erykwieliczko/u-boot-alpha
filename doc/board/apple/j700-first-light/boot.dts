@@ -38,4 +38,38 @@
         #interrupt-cells = <3>;
         #address-cells = <0>;
     };
+
+	mtp_dc: dockchannel@314b14000 {
+		compatible = "apple,t8140-dockchannel", "apple,dockchannel";
+		reg = <3 0x14b14000 0 0x4000>;
+		reg-names = "irq";
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1137 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		#address-cells = <0>;
+	};
+};
+
+&mtp_mbox {
+	interrupt-parent = <&aic>;
+	interrupts = <AIC_IRQ 1152 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1153 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1154 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1155 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+};
+
+&mtp_dart {
+	interrupt-parent = <&aic>;
+	interrupts = <AIC_IRQ 1135 IRQ_TYPE_LEVEL_HIGH>;
+	apple,dma-range = <0x100 0x4000 0 0xffff0000>;
+};
+
+&mtp_hid {
+	interrupt-parent = <&mtp_dc>;
+	interrupts = <2 IRQ_TYPE_LEVEL_HIGH>, <3 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "tx", "rx";
+	iommus = <&mtp_dart 0>;
+	apple,no-stm;
 };

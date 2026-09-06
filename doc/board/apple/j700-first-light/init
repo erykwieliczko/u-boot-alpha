@@ -7,5 +7,6 @@ echo '<6>NEO_INITRAMFS: Linux reached BusyBox userspace.' > /dev/kmsg
 /bin/busybox cat /proc/cpuinfo
 /bin/busybox sleep 2
 echo '<6>NEO_INITRAMFS: two-second userspace timer completed.' > /dev/kmsg
-echo 'Neo Linux RAM-only shell. No disks mounted; input drivers are not enabled yet.'
+echo 'Neo Linux RAM-only shell. No disks mounted. Test the built-in keyboard here.'
+echo 'To confirm typing over the debug log: echo KEYBOARD_OK > /dev/kmsg'
 exec /bin/sh

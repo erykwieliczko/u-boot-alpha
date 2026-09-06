@@ -60,10 +60,10 @@ void board_quiesce_devices(void)
 
 	apple_wdt_quiesce_devices();
 
-	if (!apple_j713_disk_boot())
+	if (!apple_j713_disk_boot() && !of_machine_is_compatible("apple,j700"))
 		return;
 
-	/* Retain and publish MTP state before the storage fabric is quiesced. */
+	/* Stop the FIFO consumer before generic removal reaches its helper/IOMMU. */
 #if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
 	ret = apple_remove_active_driver(UCLASS_KEYBOARD,
 					 DM_DRIVER_GET(apple_mtp_kbd));
