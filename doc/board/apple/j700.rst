@@ -68,6 +68,66 @@ built-in keyboard or physical UART. Booting a full OS requires a
 complete device tree and additional handoff support, not simply removing the
 display-only flag from this sparse tree.
 
+GRUB menu playground
+--------------------
+
+``j700-grub.cfg`` in this directory is a RAM-only keyboard/menu playground.
+It uses unmodified GRUB, its default colours and stock Unicode font, and an
+infinite timeout. Entries print demo messages, accept text, list the development
+ESP read-only, or return to U-Boot. They do not boot an installed OS.
+
+From the U-Boot source directory, with an already built ARM64 EFI GRUB tree::
+
+    grub_build=../grub-alpha/build-arm64-efi
+    modules='normal configfile echo sleep read test search search_label part_gpt fat ls efi_gop gfxterm font terminal minicmd help videoinfo cat'
+    "$grub_build/grub-script-check" doc/board/apple/j700-grub.cfg
+    "$grub_build/grub-mkstandalone" -O arm64-efi \
+        -d "$grub_build/grub-core" --fonts= --locales= --themes= \
+        --install-modules="$modules" --modules="$modules" \
+        -o grub-j700.efi \
+        'boot/grub/grub.cfg=doc/board/apple/j700-grub.cfg' \
+        'boot/grub/fonts/unicode.pf2=/usr/share/grub/unicode.pf2'
+    gzip -n -k grub-j700.efi
+    sha256sum grub-j700.efi grub-j700.efi.gz
+
+Transfer the gzip file and ``tools/apple_uart_upload.py`` to the controller.
+The controller needs Python pyserial and lrzsz (``sb``). At the existing U-Boot
+prompt, inspect ``loadaddr`` and switch ``stdout`` to ``serial`` for upload.
+Stop all other serial readers and do not type on the built-in keyboard during
+transfer. The tool neither resets the target nor discovers its identity: first
+verify the attached machine through the stage2 loader. Pass the **current**
+reserved load-buffer address, not one copied from a different boot::
+
+    python3 apple_uart_upload.py --device /dev/ttySAC0 \
+        --address <loadaddr-in-hex> grub-j700.efi.gz
+
+YMODEM provides block acknowledgments, CRC checks and retransmission, unlike
+the unacknowledged S-record stream used in the first experiment. The sender
+temporarily clears pyserial's nonblocking file-descriptor flag because lrzsz
+expects blocking reads. Do not have another process read the UART concurrently.
+
+In U-Boot, compare ``hash sha256`` against the host digest, decompress into a
+separate non-overlapping area **within the 64-MiB reserved load buffer**, and
+compare the uncompressed hash too. Use the actual sizes and buffer bounds, not
+assumptions about how large a font or EFI image will be. Then restore
+``setenv stdout vidconsole,serial`` and execute::
+
+    bootefi <uncompressed-address>:<uncompressed-size> ${fdtcontroladdr}
+
+On 2026-09-06, both hashes matched after a 1599066-byte compressed YMODEM
+transfer (4022272-byte EFI image). GRUB executed its configuration, accepted
+UART commands through EFI input and returned to U-Boot. A fresh graphical
+menu was then started and its appearance confirmed by the human operator.
+Earlier testing also confirmed physical keyboard navigation and entry selection.
+
+Graphical menu drawing is not mirrored to serial. For diagnostics, press ``c``
+and run ``terminal_output console``; this temporarily replaces the graphical
+display with U-Boot's text console. Do not enable both ``console`` and
+``gfxterm`` output simultaneously: both paint the same framebuffer. Use
+``terminal_output gfxterm`` and Escape to restore the menu, or exit and
+restart the EFI image for a fresh display. Coordinate with the human before
+sending commands: local keyboard and UART input share the same EFI stream.
+
 Polled ANS storage
 ------------------
 
