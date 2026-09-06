@@ -48,8 +48,9 @@ static int simple_video_probe(struct udevice *dev)
 		log_err("%s: invalid width or height: %d\n", __func__, ret);
 		return ret ?: -EINVAL;
 	}
-	ofnode_read_u32(node, "rot", &rot);
+	rot = ofnode_read_u32_default(node, "rot", 0);
 	uc_priv->rot = rot;
+
 	uc_priv->xsize = width;
 	uc_priv->ysize = height;
 
