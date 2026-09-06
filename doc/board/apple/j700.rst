@@ -3,9 +3,9 @@
 MacBook Neo (J700): inherited console bring-up
 ============================================
 
-This is a **display-only** T8140/A18 Pro bring-up configuration, not a full
+This is a **console bring-up** T8140/A18 Pro configuration, not a full
 platform port. It retains iBoot's scanout through m1n1 and exposes U-Boot's
-video and physical UART consoles. Keyboard, storage, USB, Linux boot, cold
+video, built-in keyboard and physical UART consoles. Storage, USB, Linux boot, cold
 UART initialization and system reset are not provided by this configuration.
 
 Build and package
@@ -51,21 +51,61 @@ normal non-cacheable memory. Other T8140 apertures are intentionally absent.
 ``simple_video`` uses the live padded stride, not width times pixel size.
 
 The environment is RAM-only. There is no automatic bootflow, storage scan,
-keyboard probing or USB initialization. ``ARCH_APPLE`` currently forces USB
+or USB initialization. ``ARCH_APPLE`` currently forces USB
 core/command support; the XHCI core is selected to satisfy that build dependency,
 but no host-controller frontend or USB node is enabled. Existing Apple
 configurations retain their original behavior.
 
-The boot command prints ``NEO U-BOOT V0`` after video-console initialization,
+The boot command prints ``NEO U-BOOT - KEYBOARD TEST`` after console initialization,
 then leaves the prompt on screen. The upstream EFI hello application is built
 in for a storage-free EFI text-output smoke test::
 
     bootefi hello ${fdtcontroladdr}
 
-This is not an interactive UEFI shell. The built-in keyboard is not supported;
-commands can be entered through physical UART. Booting a full OS requires a
+This is not an interactive UEFI shell. Commands can be entered through the
+built-in keyboard or physical UART. Booting a full OS requires a
 complete device tree and additional handoff support, not simply removing the
 display-only flag from this sparse tree.
+
+Built-in keyboard
+-----------------
+
+The keyboard uses MTP DockChannel, not USB or the debug DockChannel UART.
+The ASC control register and polling mailbox work through the existing RTKit
+helper and mailbox drivers. At the tested iBoot/m1n1 boundary, MTP is stopped
+with firmware preloaded in SRAM. U-Boot starts a fresh RTKit session; the
+T8132 retained-session workaround is deliberately not enabled on T8140.
+
+The live ADT identifies mapper-mtp stream 0. The T8140 DART path configures
+bypass only for explicitly connected streams with no valid firmware TTBR;
+it does not clear other streams or their tables. Hardware reads back the DART
+bypass bit, but not the requested DAPF bypass bit. m1n1 separately programs the
+ADT-described MTP DAPF and reserves the firmware segments. No unverified SRAM
+tail is stolen for shared buffers: the helper uses U-Boot-owned DRAM with the
+configured bypass path. This console milestone does not validate OS ownership
+transfer or Linux keyboard support.
+
+Captured firmware discovery announces ``multi-touch`` (1), ``keyboard`` (3),
+and ``mtp`` (2), with no ``stm``. The 189-byte keyboard HID descriptor describes
+the existing report-ID-1 modifier, six-key and Fn layout. Interface IDs remain
+dynamically discovered. Captured press/release frames carry a 20-byte body
+with a 10-byte HID payload and two alignment bytes. Unlike J713's 12-byte
+subheader length, J700 excludes that padding from the reported length. The
+parser accepts these two exact lengths while retaining frame-size, checksum
+and interface filtering. Captured J700 frames are regression fixtures.
+Only ``apple,t8140-dockchannel-hid`` permits missing
+STM; the generic driver still requires it. If STM is present, its normal
+initialization is retained. The separate ``mtp`` interface is never treated
+as STM. Touchpad firmware/reset support is not enabled.
+
+The standard keyboard uclass probes ``mtpkbd`` during stdio initialization,
+before board_late_init. ``stdin=serial,mtpkbd`` feeds the normal U-Boot/EFI
+input path. At the on-screen prompt, type::
+
+    echo NEO-KEYBOARD-OK
+
+Also check Shift, Backspace, Enter, arrow-key history, Ctrl-C and key release.
+Seeing ``MTP keyboard ready`` alone is not a physical-input acceptance test.
 
 Inherited UART mode
 -------------------
@@ -92,6 +132,10 @@ Host-side packaging tests::
 
     python3 -m unittest discover -s tools -p apple_m1n1_payload_test.py
 
+The sandbox ``ut lib`` tests ``apple_mtp_frame``, ``apple_mtp_init_name``,
+``apple_mtp_neo_interfaces`` and ``apple_mtp_neo_keys`` cover framing, captured
+interface names and unpadded J700 reports alongside the padded M4 format.
+
 Hardware checks include the visible marker, ``coninfo`` and ``dm tree`` showing
 active ``simple_video``/``vidconsole``, and ``bdinfo`` confirming high-address
 RAM and a separate framebuffer. Keep watchdog state deliberate: this human
@@ -105,6 +149,17 @@ stride. Bidirectional physical UART worked, the EFI hello application printed
 through EFI text output and returned to the prompt, and a subsequent ten-second
 idle command completed. The M1 and J713 U-Boot configurations also built; this
 does not substitute for hardware regression tests on those machines.
+
+Later the same day, the keyboard-enabled RAM boot completed fresh RTKit
+startup and discovered all three interfaces. A first input test exposed the
+10-versus-12-byte length distinction above; captured frames had valid checksums
+and real press/release transitions. After correcting that check, passive UART
+capture showed built-in keyboard typing and Enter reaching U-Boot's command
+parser, and the user confirmed that the keyboard worked. ``coninfo`` reported
+``mtpkbd`` in stdin; DART error registers were clear and all other stream TCRs
+were unchanged. Both m1n1 build modes, J700/M1/J713 U-Boot builds, the four MTP
+sandbox tests and payload-builder tests passed. EFI navigation, OS handoff and
+touchpad input still require their own validation.
 
 The EFI demo may report that variables cannot be persisted without a system
 partition. That is expected for this storage-free test and did not prevent

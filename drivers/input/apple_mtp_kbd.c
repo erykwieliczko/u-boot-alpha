@@ -42,8 +42,6 @@
 #define MTP_CMD_ENABLE_INTERFACE	0xb4
 #define MTP_STM_REPORT_ID	0x10
 #define MTP_STM_REPORT_SERIAL	0x11
-#define MTP_KEYBOARD_BODY_SIZE	0x14
-#define MTP_KEYBOARD_REPORT_SIZE	0x0c
 
 struct apple_mtp_iface {
 	char name[APPLE_MTP_MAX_NAME + 1];
@@ -80,6 +78,7 @@ struct apple_mtp_kbd_priv {
 	u8 touch_iface;
 	u8 tx_seq[MTP_MAX_INTERFACES];
 	bool retention_capable;
+	bool stm_optional;
 	bool retained;
 	bool keyboard_enabled;
 	bool shutting_down;
@@ -227,6 +226,7 @@ static int apple_mtp_handle_init(struct apple_mtp_kbd_priv *priv,
 
 	strlcpy(iface->name, name, sizeof(iface->name));
 	iface->discovered = true;
+	debug("MTP discovery: interface %u name %s (%zu bytes)\n", index, name, size);
 	if (!strcmp(name, "stm"))
 		priv->stm_iface = index;
 	else if (!strcmp(name, "keyboard"))
@@ -332,8 +332,7 @@ static int apple_mtp_handle_report(struct apple_mtp_kbd_priv *priv,
 	if (priv->shutting_down || !priv->keyboard_enabled ||
 	    hdr->iface != priv->keyboard_iface)
 		return 0;
-	if (body_size != MTP_KEYBOARD_BODY_SIZE ||
-	    payload_size != MTP_KEYBOARD_REPORT_SIZE)
+	if (!apple_mtp_keyboard_length_valid(body_size, payload_size))
 		return -EPROTO;
 
 	return apple_kbd_handle_report(input, &priv->kbd, (void *)payload,
@@ -480,7 +479,8 @@ static int apple_mtp_wait_ready(struct apple_mtp_kbd_priv *priv,
 
 static bool apple_mtp_discovery_complete(struct apple_mtp_kbd_priv *priv)
 {
-	if (priv->stm_iface == U8_MAX || priv->keyboard_iface == U8_MAX)
+	if ((!priv->stm_optional && priv->stm_iface == U8_MAX) ||
+	    priv->keyboard_iface == U8_MAX)
 		return false;
 
 	return !priv->retention_capable || priv->touch_iface != U8_MAX;
@@ -528,8 +528,8 @@ static int apple_mtp_enable_interface(struct apple_mtp_kbd_priv *priv,
 	return apple_mtp_wait_ready(priv, input, iface);
 }
 
-static int apple_mtp_initialize_keyboard(struct apple_mtp_kbd_priv *priv,
-					 struct input_config *input)
+static int apple_mtp_initialize_stm(struct apple_mtp_kbd_priv *priv,
+				    struct input_config *input)
 {
 	u8 response[64];
 	size_t response_size;
@@ -555,6 +555,21 @@ static int apple_mtp_initialize_keyboard(struct apple_mtp_kbd_priv *priv,
 				     &response_size);
 	if (ret || !response_size)
 		return ret ?: -EPROTO;
+
+	return 0;
+}
+
+static int apple_mtp_initialize_keyboard(struct apple_mtp_kbd_priv *priv,
+					 struct input_config *input)
+{
+	int ret;
+
+	/* T8140 announces "mtp", not "stm". Never send STM reports to it. */
+	if (priv->stm_iface != U8_MAX) {
+		ret = apple_mtp_initialize_stm(priv, input);
+		if (ret)
+			return ret;
+	}
 
 	ret = apple_mtp_enable_interface(priv, input, priv->keyboard_iface);
 	if (ret)
@@ -644,6 +659,7 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 	priv->stm_iface = U8_MAX;
 	priv->keyboard_iface = U8_MAX;
 	priv->touch_iface = U8_MAX;
+	priv->stm_optional = dev_get_driver_data(dev);
 	input->dev = dev;
 	input->read_keys = apple_mtp_kbd_check;
 	ret = input_add_tables(input, false);
@@ -688,8 +704,8 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 	if (ret)
 		goto err_marker;
 
-	dev_info(dev, "MTP keyboard ready (STM %u, keyboard %u%s)\n",
-		 priv->stm_iface, priv->keyboard_iface,
+	dev_info(dev, "MTP keyboard ready (keyboard %u%s%s)\n",
+		 priv->keyboard_iface, priv->stm_iface == U8_MAX ? ", no STM" : "",
 		 priv->retained ? ", retained handoff" : "");
 	return 0;
 
@@ -815,6 +831,7 @@ static const struct keyboard_ops apple_mtp_kbd_ops = {
 };
 
 static const struct udevice_id apple_mtp_kbd_of_match[] = {
+	{ .compatible = "apple,t8140-dockchannel-hid", .data = 1 },
 	{ .compatible = "apple,dockchannel-hid" },
 	{ }
 };

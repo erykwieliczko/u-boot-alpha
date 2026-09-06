@@ -73,6 +73,9 @@ struct apple_dart_priv {
 	void *base;
 	u64 *l1, *l2;
 	int bypass, shift;
+	bool stream_bypass;
+	u32 connected;
+	u32 saved_tcr[16];
 
 	struct lmb io_lmb;
 
@@ -165,7 +168,48 @@ static void apple_dart_unmap(struct udevice *dev, dma_addr_t addr, size_t size)
 	io_lmb_free(&priv->io_lmb, dva, psize);
 }
 
+static int apple_dart_connect(struct udevice *dev)
+{
+	struct apple_dart_priv *priv = dev_get_priv(dev->iommu);
+	struct ofnode_phandle_args args;
+	int count, i, ret;
+	u32 sid;
+
+	if (!priv->stream_bypass)
+		return 0;
+
+	count = dev_count_phandle_with_args(dev, "iommus", "#iommu-cells", 0);
+	for (i = 0; i < count; i++) {
+		ret = dev_read_phandle_with_args(dev, "iommus", "#iommu-cells",
+						 0, i, &args);
+		if (ret)
+			return ret;
+		if (!ofnode_equal(args.node, dev_ofnode(dev->iommu)))
+			continue;
+		if (args.args_count != 1 || args.args[0] >= priv->nsid)
+			return -EINVAL;
+		sid = args.args[0];
+		if (priv->connected & BIT(sid))
+			continue;
+		/* Do not replace a firmware-owned translation table. */
+		if (readl(priv->base + DART_TTBR(priv, sid, 0)) & priv->ttbr_valid)
+			return -EBUSY;
+		priv->saved_tcr[sid] = readl(priv->base + DART_TCR(priv, sid));
+		writel(priv->tcr_bypass, priv->base + DART_TCR(priv, sid));
+		/* The DAPF bypass request does not remain set on T8140. */
+		if ((readl(priv->base + DART_TCR(priv, sid)) &
+		     (DART_T8110_TCR_BYPASS_DART | DART_T8110_TCR_TRANSLATE_ENABLE)) !=
+		    DART_T8110_TCR_BYPASS_DART) {
+			writel(priv->saved_tcr[sid], priv->base + DART_TCR(priv, sid));
+			return -EIO;
+		}
+		priv->connected |= BIT(sid);
+	}
+	return 0;
+}
+
 static struct iommu_ops apple_dart_ops = {
+	.connect = apple_dart_connect,
 	.map = apple_dart_map,
 	.unmap = apple_dart_unmap,
 };
@@ -182,8 +226,9 @@ static int apple_dart_probe(struct udevice *dev)
 	priv->base = dev_read_addr_ptr(dev);
 	if (!priv->base)
 		return -EINVAL;
+	priv->stream_bypass = device_is_compatible(dev, "apple,t8140-dart");
 
-	if (device_is_compatible(dev, "apple,t8110-dart")) {
+	if (priv->stream_bypass || device_is_compatible(dev, "apple,t8110-dart")) {
 		params4 = readl(priv->base + DART_T8110_PARAMS4);
 		priv->nsid = params4 & DART_T8110_PARAMS4_NSID_MASK;
 		priv->nttbr = 1;
@@ -208,9 +253,19 @@ static int apple_dart_probe(struct udevice *dev)
 		priv->flush_tlb = apple_dart_t8020_flush_tlb;
 	}
 
-	if (device_is_compatible(dev, "apple,t6000-dart") ||
+	if (priv->stream_bypass || device_is_compatible(dev, "apple,t6000-dart") ||
 	    device_is_compatible(dev, "apple,t8110-dart"))
 		priv->shift = 4;
+
+	/* T8140 console bring-up owns only the explicitly attached streams. */
+	if (priv->stream_bypass) {
+		if (priv->nsid > ARRAY_SIZE(priv->saved_tcr) ||
+		    !(readl(priv->base + DART_PARAMS2) & DART_PARAMS2_BYPASS_SUPPORT) ||
+		    (readl(priv->base + DART_T8110_PROTECT) & DART_T8110_PROTECT_TTBR_TCR))
+			return -EOPNOTSUPP;
+		priv->bypass = 1;
+		return 0;
+	}
 
 	priv->dvabase = DART_PAGE_SIZE;
 	priv->dvaend = SZ_4G - DART_PAGE_SIZE;
@@ -292,6 +347,15 @@ static int apple_dart_remove(struct udevice *dev)
 	struct apple_dart_priv *priv = dev_get_priv(dev);
 	int sid, i;
 
+	if (priv->stream_bypass) {
+		for (sid = 0; sid < priv->nsid; sid++) {
+			if (priv->connected & BIT(sid))
+				writel(priv->saved_tcr[sid], priv->base + DART_TCR(priv, sid));
+		}
+		priv->connected = 0;
+		return 0;
+	}
+
 	/* Disable translations. */
 	for (sid = 0; sid < priv->nsid; sid++)
 		writel(0, priv->base + DART_TCR(priv, sid));
@@ -309,6 +373,7 @@ static int apple_dart_remove(struct udevice *dev)
 }
 
 static const struct udevice_id apple_dart_ids[] = {
+	{ .compatible = "apple,t8140-dart" },
 	{ .compatible = "apple,t8103-dart" },
 	{ .compatible = "apple,t6000-dart" },
 	{ .compatible = "apple,t8110-dart" },

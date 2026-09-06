@@ -38,6 +38,16 @@ struct apple_mtp_init_header {
 	u8 pad;
 } __packed;
 
+static inline bool apple_mtp_keyboard_length_valid(size_t body_size, size_t payload_size)
+{
+	/* Ten HID bytes, with two bytes of transport alignment padding.
+	 * Firmware may include that padding in the subheader length (M4)
+	 * or report only the HID length (J700). Neither permits a short report.
+	 */
+	return body_size == sizeof(struct apple_mtp_subheader) + 12 &&
+		(payload_size == 10 || payload_size == 12);
+}
+
 static inline u32 apple_mtp_checksum(const void *data, size_t size)
 {
 	const u8 *p = data;
