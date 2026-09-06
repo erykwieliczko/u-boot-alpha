@@ -40,3 +40,5 @@ int apple_rtkit_helper_poll(struct udevice *dev, ulong timeout);
 bool apple_rtkit_helper_can_retain(struct udevice *dev);
 int apple_rtkit_helper_retain(struct udevice *dev);
 void apple_rtkit_helper_release(struct udevice *dev);
+
+int apple_rtkit_helper_fixup_fdt(struct udevice *dev, void *fdt);

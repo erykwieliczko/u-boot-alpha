@@ -103,4 +103,7 @@ apple_mtp_init_name(const void *payload, size_t size, u8 *iface,
 	return 0;
 }
 
+struct udevice;
+int apple_mtp_kbd_fixup_fdt(struct udevice *dev, void *fdt);
+
 #endif /* __APPLE_MTP_H */

@@ -3,6 +3,7 @@
  * (C) Copyright 2021 Mark Kettenis <kettenis@openbsd.org>
  */
 
+#include <apple_mtp.h>
 #include <dm.h>
 #include <bootm.h>
 #include <dm/device-internal.h>
@@ -1254,6 +1255,17 @@ int ft_board_setup(void *blob, struct bd_info *bd)
 	struct udevice *dev;
 	const char *stdoutname;
 	int node, ret;
+
+#if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
+	for (uclass_find_first_device(UCLASS_KEYBOARD, &dev); dev;
+	     uclass_find_next_device(&dev)) {
+		if (!device_active(dev) || dev->driver != DM_DRIVER_GET(apple_mtp_kbd))
+			continue;
+		ret = apple_mtp_kbd_fixup_fdt(dev, blob);
+		if (ret)
+			return ret;
+	}
+#endif
 
 	/*
 	 * Modify the "stdout-path" property under "/chosen" to point

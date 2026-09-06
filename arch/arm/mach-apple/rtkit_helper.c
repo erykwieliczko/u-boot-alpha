@@ -7,6 +7,7 @@
 #include <fdt_support.h>
 #include <mailbox.h>
 #include <mapmem.h>
+#include <linux/list.h>
 #include <reset.h>
 
 #include <asm/io.h>
@@ -22,6 +23,12 @@ DECLARE_GLOBAL_DATA_PTR;
 
 #define APPLE_RTKIT_EP_OSLOG 8
 
+struct rtkit_handoff_buffer {
+	struct list_head node;
+	void *buffer;
+	size_t size;
+};
+
 struct rtkit_helper_priv {
 	void *asc;		/* ASC registers */
 	struct mbox_chan chan;
@@ -29,13 +36,13 @@ struct rtkit_helper_priv {
 	bool sram_stolen;
 	bool handoff_capable;
 	bool retain;
+	struct list_head handoff_buffers;
 };
 
 static int shmem_setup(void *cookie, struct apple_rtkit_buffer *buf)
 {
 	struct udevice *dev = cookie;
 	struct rtkit_helper_priv *priv = dev_get_priv(dev);
-	int ret;
 
 	if (!buf->is_mapped) {
 		/*
@@ -68,16 +75,16 @@ static int shmem_setup(void *cookie, struct apple_rtkit_buffer *buf)
 		if (!buf->buffer)
 			return -ENOMEM;
 		if (priv->handoff_capable) {
-			ret = fdt_add_mem_rsv((void *)gd->fdt_blob,
-					      (phys_addr_t)buf->buffer,
-					      ALIGN(buf->size, SZ_16K));
-			if (ret) {
-				printf("%s: failed to reserve RTKit endpoint %u buffer: %s\n",
-				       __func__, buf->endpoint, fdt_strerror(ret));
+			struct rtkit_handoff_buffer *entry = malloc(sizeof(*entry));
+
+			if (!entry) {
 				free(buf->buffer);
 				buf->buffer = NULL;
-				return -ENOSPC;
+				return -ENOMEM;
 			}
+			entry->buffer = buf->buffer;
+			entry->size = ALIGN(buf->size, SZ_16K);
+			list_add_tail(&entry->node, &priv->handoff_buffers);
 		}
 
 		buf->dva = (u64)buf->buffer;
@@ -89,27 +96,20 @@ static void shmem_destroy(void *cookie, struct apple_rtkit_buffer *buf)
 {
 	struct udevice *dev = cookie;
 	struct rtkit_helper_priv *priv = dev_get_priv(dev);
-	void *fdt = (void *)gd->fdt_blob;
-	u64 addr, size;
-	int i;
+	struct rtkit_handoff_buffer *entry, *next;
 
 	if (!buf->buffer)
 		return;
 
-	if (priv->handoff_capable) {
-		for (i = fdt_num_mem_rsv(fdt) - 1; i >= 0; i--) {
-			if (fdt_get_mem_rsv(fdt, i, &addr, &size))
-				continue;
-			if (addr == (phys_addr_t)buf->buffer &&
-			    size == ALIGN(buf->size, SZ_16K)) {
-				fdt_del_mem_rsv(fdt, i);
-				break;
-			}
+	list_for_each_entry_safe(entry, next, &priv->handoff_buffers, node) {
+		if (entry->buffer == buf->buffer) {
+			list_del(&entry->node);
+			free(entry);
+			break;
 		}
 	}
-
-	if (buf->buffer)
-		free(buf->buffer);
+	free(buf->buffer);
+	buf->buffer = NULL;
 }
 
 static int rtkit_helper_probe(struct udevice *dev)
@@ -119,6 +119,7 @@ static int rtkit_helper_probe(struct udevice *dev)
 	u32 ctrl;
 	int ret;
 
+	INIT_LIST_HEAD(&priv->handoff_buffers);
 	priv->asc = dev_read_addr_ptr(dev);
 	if (!priv->asc)
 		return -EINVAL;
@@ -243,6 +244,29 @@ void apple_rtkit_helper_release(struct udevice *dev)
 		ofnode_write_u32(dev_ofnode(dev->iommu),
 				 "linux-enablement-mac,retained-bypass", 0);
 	dev_bic_flags(dev, DM_FLAG_LEAVE_PD_ON);
+}
+
+/* Publish retained allocations only to the OS copy, never the control FDT.
+ * Resizing the flat control tree invalidates bound device offsets and names.
+ */
+int apple_rtkit_helper_fixup_fdt(struct udevice *dev, void *fdt)
+{
+	struct rtkit_helper_priv *priv = dev_get_priv(dev);
+	struct rtkit_handoff_buffer *entry;
+	int ret;
+
+	if (fdt == gd->fdt_blob)
+		return -EINVAL;
+	if (!priv->retain)
+		return 0;
+
+	list_for_each_entry(entry, &priv->handoff_buffers, node) {
+		ret = fdt_add_mem_rsv(fdt, (phys_addr_t)entry->buffer, entry->size);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static const struct udevice_id rtkit_helper_ids[] = {

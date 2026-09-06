@@ -9,9 +9,6 @@
 #include <dm/device_compat.h>
 #include <dm/ofnode.h>
 #include <dm/simple_bus.h>
-#if CONFIG_IS_ENABLED(EFI_LOADER)
-#include <efi_loader.h>
-#endif
 #include <keyboard.h>
 #include <limits.h>
 #include <malloc.h>
@@ -650,7 +647,7 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 	{
 		int size;
 
-		/* A preallocated word lets flat-DT handoff preserve node offsets. */
+		/* Preserve the input tree's boolean/u32 handoff representation. */
 		priv->handoff_u32 =
 			ofnode_get_property(priv->helper_node, MTP_INHERITED_PROP, &size) &&
 			size == sizeof(u32);
@@ -696,36 +693,18 @@ static int apple_mtp_kbd_probe(struct udevice *dev)
 		if (ret)
 			goto err_free;
 		priv->retained = true;
-
-		/*
-		 * EFI can copy the configuration-table FDT before
-		 * ExitBootServices. Publish ownership before that copy; removal
-		 * below completes FIFO replay and mirrors a private EFI tree.
-		 */
-		ret = priv->handoff_u32 ?
-			ofnode_write_u32(priv->helper_node, MTP_INHERITED_PROP, 1) :
-			ofnode_write_prop(priv->helper_node, MTP_INHERITED_PROP, NULL, 0, true);
-		if (ret)
-			goto err_release;
 	}
 
 	strcpy(sdev->name, "mtpkbd");
 	ret = input_stdio_register(sdev);
 	if (ret)
-		goto err_marker;
+		goto err_release;
 
 	dev_info(dev, "MTP keyboard ready (keyboard %u%s%s)\n",
 		 priv->keyboard_iface, priv->stm_iface == U8_MAX ? ", no STM" : "",
 		 priv->retained ? ", retained handoff" : "");
 	return 0;
 
-err_marker:
-	if (priv->retained) {
-		if (priv->handoff_u32)
-			ofnode_write_u32(priv->helper_node, MTP_INHERITED_PROP, 0);
-		else
-			ofnode_delete_prop(priv->helper_node, MTP_INHERITED_PROP);
-	}
 err_release:
 	if (priv->retained) {
 		apple_rtkit_helper_release(priv->helper);
@@ -737,6 +716,30 @@ err_free:
 	priv->init_data = NULL;
 	priv->frame = NULL;
 	return ret;
+}
+
+int apple_mtp_kbd_fixup_fdt(struct udevice *dev, void *fdt)
+{
+	struct apple_mtp_kbd_priv *priv = dev_get_priv(dev);
+	char path[MTP_FDT_PATH_SIZE];
+	int ret, offset;
+
+	if (!priv->retained)
+		return 0;
+	ret = apple_rtkit_helper_fixup_fdt(priv->helper, fdt);
+	if (ret)
+		return ret;
+	ret = ofnode_get_path(priv->helper_node, path, sizeof(path));
+	if (ret)
+		return ret;
+	offset = fdt_path_offset(fdt, path);
+	if (offset < 0)
+		return offset;
+
+	/* EFI copies this tree before ExitBootServices replays the FIFO. */
+	return priv->handoff_u32 ?
+		fdt_setprop_u32(fdt, offset, MTP_INHERITED_PROP, 1) :
+		fdt_setprop(fdt, offset, MTP_INHERITED_PROP, NULL, 0);
 }
 
 static int apple_mtp_kbd_remove(struct udevice *dev)
@@ -782,55 +785,6 @@ static int apple_mtp_kbd_remove(struct udevice *dev)
 	if (ret) {
 		dev_err(dev, "discovery replay failed (%d)\n", ret);
 		return ret;
-	}
-
-	if (priv->retained) {
-		ret = priv->handoff_u32 ?
-			ofnode_write_u32(priv->helper_node, MTP_INHERITED_PROP, 1) :
-			ofnode_write_prop(priv->helper_node, MTP_INHERITED_PROP, NULL, 0, true);
-		if (ret) {
-			dev_err(dev, "control FDT marker failed (%d)\n", ret);
-			return ret;
-		}
-
-#if CONFIG_IS_ENABLED(EFI_LOADER)
-		{
-			void *efi_fdt =
-				efi_get_configuration_table(&efi_guid_fdt);
-			char path[MTP_FDT_PATH_SIZE];
-			int offset;
-
-			if (efi_fdt &&
-			    efi_fdt != ofnode_to_fdt(priv->helper_node)) {
-				ret = ofnode_get_path(priv->helper_node, path,
-						      sizeof(path));
-				if (ret) {
-					dev_err(dev,
-						"helper FDT path failed (%d)\n",
-						ret);
-					return ret;
-				}
-
-				offset = fdt_path_offset(efi_fdt, path);
-				if (offset < 0) {
-					dev_err(dev,
-						"EFI FDT helper lookup failed (%d)\n",
-						offset);
-					return offset;
-				}
-
-				ret = priv->handoff_u32 ?
-					fdt_setprop_u32(efi_fdt, offset, MTP_INHERITED_PROP, 1) :
-					fdt_setprop(efi_fdt, offset, MTP_INHERITED_PROP, NULL, 0);
-				if (ret) {
-					dev_err(dev,
-						"EFI FDT marker failed (%d)\n",
-						ret);
-					return ret;
-				}
-			}
-		}
-#endif
 	}
 
 	dev_info(dev, "replayed %zu MTP discovery bytes%s\n",
