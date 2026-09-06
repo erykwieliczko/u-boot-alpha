@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* Console-only J700 tree. m1n1 fills in memory and inherited framebuffer. */
+/dts-v1/;
+
+/ {
+	compatible = "apple,j700", "apple,t8140", "apple,arm-platform";
+	model = "Apple MacBook Neo (J700)";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	aliases {
+		serial0 = &serial0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		asahi,display-only;
+		stdout-path = "serial0:115200n8";
+		framebuffer {
+			compatible = "simple-framebuffer";
+			status = "disabled";
+		};
+	};
+
+	memory {
+		device_type = "memory";
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		bootph-all;
+
+		serial0: serial@385200000 {
+			compatible = "apple,t8140-uart";
+			reg = <0x3 0x85200000 0 0x4000>;
+			reg-io-width = <4>;
+			current-speed = <115200>;
+			bootph-all;
+		};
+	};
+};

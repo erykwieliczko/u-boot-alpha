@@ -1,0 +1,111 @@
+.. SPDX-License-Identifier: GPL-2.0+ OR MIT
+
+MacBook Neo (J700): inherited console bring-up
+============================================
+
+This is a **display-only** T8140/A18 Pro bring-up configuration, not a full
+platform port. It retains iBoot's scanout through m1n1 and exposes U-Boot's
+video and physical UART consoles. Keyboard, storage, USB, Linux boot, cold
+UART initialization and system reset are not provided by this configuration.
+
+Build and package
+-----------------
+
+Build m1n1 stage2 with its J700 display-only handoff support, using
+``RELEASE=1 CHAINLOADING=0``. Then, from the U-Boot tree::
+
+    make O=build-j700 CROSS_COMPILE=aarch64-linux-gnu- apple_j700_defconfig
+    make O=build-j700 CROSS_COMPILE=aarch64-linux-gnu- -j8
+    python3 tools/apple_m1n1_payload.py \
+        --stage2 ../m1n1-alpha/build/m1n1.bin \
+        --dtb build-j700/arch/arm/dts/t8140-j700.dtb \
+        --uboot build-j700/u-boot-nodtb.bin \
+        --output boot-j700.bin
+
+The package is raw m1n1 stage2, the J700 FDT, a gzip-compressed ARM64 U-Boot
+Image, and a payload terminator. m1n1's normal payload parser selects
+``apple,j700``, decompresses U-Boot into a 2 MiB-aligned allocation, prepares
+the FDT and performs its normal cache/MMU teardown before entry with the FDT
+in x0. This is not an alternative proxy-only boot ABI.
+
+RAM-chainload this package using the usual target-verified m1n1 loader. The
+configuration does not require replacing installed stage1 or writing storage.
+A loader which waits for another m1n1 proxy will time out after this image
+successfully enters U-Boot; stop sending proxy requests after the handoff and
+use the ordinary text console instead.
+
+Runtime contract
+----------------
+
+The supplied FDT identifies ``apple,j700`` and ``apple,t8140`` and opts into
+``/chosen/asahi,display-only``. m1n1 recognizes that option only on J700/T8140.
+It supplies usable memory and framebuffer geometry from the live boot and
+retains its normal firmware, FDT, chainload and CTRR reservations. No physical
+RAM or framebuffer address is hardcoded into the payload packager. The input
+FDT's disabled framebuffer and address-less memory node must be fixed up by
+m1n1; the build-time DTB is not directly bootable.
+
+U-Boot maps the 0x300000000..0x3ffffffff console MMIO aperture as device memory,
+usable DRAM as normal memory, and the inherited framebuffer separately as
+normal non-cacheable memory. Other T8140 apertures are intentionally absent.
+``simple_video`` uses the live padded stride, not width times pixel size.
+
+The environment is RAM-only. There is no automatic bootflow, storage scan,
+keyboard probing or USB initialization. ``ARCH_APPLE`` currently forces USB
+core/command support; the XHCI core is selected to satisfy that build dependency,
+but no host-controller frontend or USB node is enabled. Existing Apple
+configurations retain their original behavior.
+
+The boot command prints ``NEO U-BOOT V0`` after video-console initialization,
+then leaves the prompt on screen. The upstream EFI hello application is built
+in for a storage-free EFI text-output smoke test::
+
+    bootefi hello ${fdtcontroladdr}
+
+This is not an interactive UEFI shell. The built-in keyboard is not supported;
+commands can be entered through physical UART. Booting a full OS requires a
+complete device tree and additional handoff support, not simply removing the
+display-only flag from this sparse tree.
+
+Inherited UART mode
+-------------------
+
+``apple,t8140-uart`` is an initial inherited-console implementation. It requires
+32-bit register accesses, an already configured UART, and ``current-speed``
+matching the requested console baud rate. J700 uses 115200 baud for this path.
+Probe and setbrg preserve the inherited control, FIFO, clock and divisor state;
+unsupported baud changes return an error. RX-ready, TX-ready and TX-empty are
+polled through UTRSTAT, using the predicates already exercised by m1n1.
+
+Hardware experiments found that FIFO-full TX polling corrupted output, and
+writing the old generic UCON value broke the previously readable stream.
+Preserving UCON and using TX-ready pacing reached U-Boot's real unsupported-SoC
+panic before the T8140 map was added. This is not proof of the meaning of each
+T8140 UCON/FIFO field. Cold initialization needs separate documentation and
+validation. The inherited mode is selected only by the new compatible; the
+existing Apple and Samsung compatibles use their original code paths.
+
+Validation
+----------
+
+Host-side packaging tests::
+
+    python3 -m unittest discover -s tools -p apple_m1n1_payload_test.py
+
+Hardware checks include the visible marker, ``coninfo`` and ``dm tree`` showing
+active ``simple_video``/``vidconsole``, and ``bdinfo`` confirming high-address
+RAM and a separate framebuffer. Keep watchdog state deliberate: this human
+console test inherits the disabled watchdogs from m1n1; disabling a U-Boot
+configuration symbol alone would not disarm a running hardware watchdog.
+
+On 2026-09-06, J700 completed two RAM-loaded boots through the normal m1n1
+payload path. The user confirmed readable on-screen output. Runtime checks
+reported 7.6 GiB usable RAM and a 2408 x 1506 x 32 framebuffer with 9664-byte
+stride. Bidirectional physical UART worked, the EFI hello application printed
+through EFI text output and returned to the prompt, and a subsequent ten-second
+idle command completed. The M1 and J713 U-Boot configurations also built; this
+does not substitute for hardware regression tests on those machines.
+
+The EFI demo may report that variables cannot be persisted without a system
+partition. That is expected for this storage-free test and did not prevent
+the application from running. No persistent boot installation was performed.

@@ -910,6 +910,27 @@ static struct mm_region t8132_mem_map[] = {
 	}
 };
 
+/* Console-only T8140 map; add other apertures with their device support. */
+static struct mm_region t8140_mem_map[] = {
+	{
+		.virt = 0x300000000,
+		.phys = 0x300000000,
+		.size = 4UL * SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_DEVICE_NGNRNE) |
+			 PTE_BLOCK_NON_SHARE | PTE_BLOCK_PXN | PTE_BLOCK_UXN,
+	}, {
+		/* Replaced with usable RAM from the incoming FDT. */
+		.size = SZ_1G,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) | PTE_BLOCK_INNER_SHARE,
+	}, {
+		/* Replaced with the inherited framebuffer from the FDT. */
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL_NC) |
+			 PTE_BLOCK_INNER_SHARE | PTE_BLOCK_PXN | PTE_BLOCK_UXN,
+	}, {
+		0,
+	}
+};
+
 struct mm_region *mem_map;
 
 int board_init(void)
@@ -961,6 +982,8 @@ void build_mem_map(void)
 		mem_map = t8122_mem_map;
 	else if (of_machine_is_compatible("apple,t8132"))
 		mem_map = t8132_mem_map;
+	else if (of_machine_is_compatible("apple,t8140"))
+		mem_map = t8140_mem_map;
 	else
 		panic("Unsupported SoC\n");
 
@@ -1159,6 +1182,12 @@ int board_late_init(void)
 	u32 status = 0;
 	phys_addr_t addr;
 	int ret;
+
+	/* No automatic peripheral discovery for the explicit J700 display test. */
+	if (of_machine_is_compatible("apple,j700") &&
+	    of_machine_is_compatible("apple,t8140") &&
+	    ofnode_read_bool(ofnode_path("/chosen"), "asahi,display-only"))
+		return 0;
 
 #if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
 	if (apple_j713_disk_boot()) {

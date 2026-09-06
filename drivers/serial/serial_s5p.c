@@ -22,7 +22,8 @@
 
 enum {
 	PORT_S5P = 0,
-	PORT_S5L
+	PORT_S5L,
+	PORT_T8140
 };
 
 #define UFCON_FIFO_EN		BIT(0)
@@ -59,6 +60,7 @@ struct s5p_serial_plat {
 	u32 tx_fifo_count_mask;
 	u32 rx_fifo_full;
 	u32 tx_fifo_full;
+	bool inherited_console;
 };
 
 /*
@@ -124,6 +126,13 @@ int s5p_serial_setbrg(struct udevice *dev, int baudrate)
 	struct s5p_uart *const uart = plat->reg;
 	u32 uclk;
 
+	/* T8140 v0 keeps iBoot/m1n1's working control and clock selection.
+	 * Cold initialization and arbitrary baud changes are not supported yet.
+	 */
+	if (plat->inherited_console)
+		return baudrate == dev_read_u32_default(dev, "current-speed", 0) ?
+			0 : -EINVAL;
+
 #if IS_ENABLED(CONFIG_CLK_EXYNOS) || IS_ENABLED(CONFIG_ARCH_APPLE)
 	struct clk clk;
 	int ret;
@@ -145,6 +154,9 @@ static int s5p_serial_probe(struct udevice *dev)
 {
 	struct s5p_serial_plat *plat = dev_get_plat(dev);
 	struct s5p_uart *const uart = plat->reg;
+
+	if (plat->inherited_console)
+		return 0;
 
 	s5p_serial_init(uart);
 
@@ -175,6 +187,12 @@ static int s5p_serial_getc(struct udevice *dev)
 	struct s5p_serial_plat *plat = dev_get_plat(dev);
 	struct s5p_uart *const uart = plat->reg;
 
+	if (plat->inherited_console) {
+		if (!(readl(&uart->utrstat) & BIT(0)))
+			return -EAGAIN;
+		return readl(&uart->urxh) & 0xff;
+	}
+
 	if (!(readl(&uart->ufstat) & plat->rx_fifo_count_mask))
 		return -EAGAIN;
 
@@ -189,6 +207,16 @@ static int s5p_serial_putc(struct udevice *dev, const char ch)
 {
 	struct s5p_serial_plat *plat = dev_get_plat(dev);
 	struct s5p_uart *const uart = plat->reg;
+
+	/* The inherited T8140 state does not provide usable FIFO-full pacing.
+	 * Use the same per-byte transmit-ready predicate as m1n1 instead.
+	 */
+	if (plat->inherited_console) {
+		if (!(readl(&uart->utrstat) & BIT(1)))
+			return -EAGAIN;
+		writel(ch, &uart->utxh);
+		return 0;
+	}
 
 	if (readl(&uart->ufstat) & plat->tx_fifo_full)
 		return -EAGAIN;
@@ -206,7 +234,14 @@ static int s5p_serial_pending(struct udevice *dev, bool input)
 {
 	struct s5p_serial_plat *plat = dev_get_plat(dev);
 	struct s5p_uart *const uart = plat->reg;
-	uint32_t ufstat = readl(&uart->ufstat);
+	uint32_t ufstat;
+
+	if (plat->inherited_console) {
+		u32 status = readl(&uart->utrstat);
+
+		return input ? !!(status & BIT(0)) : !(status & BIT(2));
+	}
+	ufstat = readl(&uart->ufstat);
 
 	if (input) {
 		return (ufstat & plat->rx_fifo_count_mask) >>
@@ -222,6 +257,12 @@ static int s5p_serial_of_to_plat(struct udevice *dev)
 	struct s5p_serial_plat *plat = dev_get_plat(dev);
 	const ulong port_type = dev_get_driver_data(dev);
 
+	plat->inherited_console = port_type == PORT_T8140;
+	if (plat->inherited_console &&
+	    (!dev_read_u32_default(dev, "current-speed", 0) ||
+	     dev_read_u32_default(dev, "reg-io-width", 0) != 4))
+		return -EINVAL;
+
 	plat->reg = dev_read_addr_ptr(dev);
 	if (!plat->reg)
 		return -EINVAL;
@@ -229,7 +270,7 @@ static int s5p_serial_of_to_plat(struct udevice *dev)
 	plat->reg_width = dev_read_u32_default(dev, "reg-io-width", 1);
 	plat->port_id = dev_read_u8_default(dev, "id", dev_seq(dev));
 
-	if (port_type == PORT_S5L) {
+	if (port_type == PORT_S5L || port_type == PORT_T8140) {
 		plat->rx_fifo_count_shift = S5L_RX_FIFO_COUNT_SHIFT;
 		plat->rx_fifo_count_mask = S5L_RX_FIFO_COUNT_MASK;
 		plat->rx_fifo_full = S5L_RX_FIFO_FULL;
@@ -256,6 +297,7 @@ static const struct dm_serial_ops s5p_serial_ops = {
 };
 
 static const struct udevice_id s5p_serial_ids[] = {
+	{ .compatible = "apple,t8140-uart",       .data = PORT_T8140 },
 	{ .compatible = "samsung,exynos4210-uart",	.data = PORT_S5P },
 	{ .compatible = "samsung,exynos850-uart",	.data = PORT_S5P },
 	{ .compatible = "samsung,exynos8895-uart",	.data = PORT_S5P },
