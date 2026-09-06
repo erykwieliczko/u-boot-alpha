@@ -1,0 +1,71 @@
+/* SPDX-License-Identifier: GPL-2.0+ OR MIT */
+/* Front HPM1 only. No HPM0 protocol owner or rear lane graph. */
+#include <dt-bindings/spmi/spmi.h>
+
+&{/soc} {
+	usb_mini_pmgr: power-management@308280000 {
+		compatible = "apple,t8140-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		reg = <3 0x08280000 0 0xc000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ps_usb_spmi: power-controller@68 {
+			compatible = "apple,t8140-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x68 4>;
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			label = "nub_spmi_a0";
+			apple,always-on;
+		};
+	};
+	usb_spmi: spmi@308908000 {
+		compatible = "apple,t8140-spmi", "apple,t8103-spmi";
+		reg = <3 0x08908000 0 0x100>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 494 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		power-domains = <&ps_usb_spmi>;
+		hpm1: usb-pd@a {
+			compatible = "apple,sn201202x";
+			reg = <0xa SPMI_USID>;
+			interrupt-parent = <&usb_spmi>;
+			interrupts = <37 IRQ_TYPE_EDGE_RISING>, <39 IRQ_TYPE_EDGE_RISING>,
+				     <43 IRQ_TYPE_EDGE_RISING>, <45 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Left-front";
+				data-role = "host";
+				power-role = "dual";
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						reg = <0>;
+						front_hs: endpoint {
+							remote-endpoint = <&front_role>;
+						};
+					};
+				};
+			};
+		};
+	};
+};
+
+&usb_host {
+	usb2-role-inputs {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		role-switch@1 {
+			reg = <1>;
+			usb-role-switch;
+			port {
+				front_role: endpoint {
+					remote-endpoint = <&front_hs>;
+				};
+			};
+		};
+	};
+};

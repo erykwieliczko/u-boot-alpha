@@ -1,0 +1,23 @@
+#!/bin/sh
+# Bounded, read-only sysfs inventory for UART observation; no probing or resets.
+for wait in 2 8 20; do
+    /bin/busybox sleep "$wait"
+    printf '<6>NEO_USB: inventory\n'
+    for device in /sys/bus/usb/devices/*; do
+        [ -r "$device/idVendor" ] || continue
+        IFS= read -r vendor < "$device/idVendor"
+        IFS= read -r product < "$device/idProduct"
+        IFS= read -r speed < "$device/speed"
+        name=
+        [ ! -r "$device/product" ] || IFS= read -r name < "$device/product"
+        printf '<6>NEO_USB: %s %s:%s speed=%s product=%s\n' \
+            "${device##*/}" "$vendor" "$product" "$speed" "$name"
+    done
+    for interface in /sys/bus/usb/devices/*:*; do
+        [ -L "$interface/driver" ] || continue
+        driver=$(cd "$interface/driver" && pwd -P)
+        printf '<6>NEO_USB: %s driver=%s\n' "${interface##*/}" "${driver##*/}"
+    done
+    /bin/usb-hub-status
+done
+printf '<6>NEO_USB: bounded inventory complete\n'

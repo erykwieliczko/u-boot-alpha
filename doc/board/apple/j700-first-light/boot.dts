@@ -5,6 +5,10 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/gpio/gpio.h>
 
+#ifdef NEO_USB2
+#include "usb2.dtsi"
+#endif
+
 / {
     cpus {
         #address-cells = <2>;

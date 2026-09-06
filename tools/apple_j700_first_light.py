@@ -36,9 +36,19 @@ def main():
     parser.add_argument('--uboot', type=Path, required=True)
     parser.add_argument('--touchpad-firmware', type=Path,
                         help='Optional J700 HIDF firmware; enable the touchpad test fixture')
+    parser.add_argument('--usb2', action='store_true',
+                        help='Enable experimental J700 fixed-hub USB2 host bring-up')
+    parser.add_argument('--usb2-front', action='store_true',
+                        help='With --usb2, service front HPM1; rear debug HPM stays unbound')
+    parser.add_argument('--usb-network-root', type=Path,
+                        help='Optional AArch64 iw/ip/timeout, libraries and firmware root')
     parser.add_argument('--font', type=Path, default=Path('/usr/share/grub/unicode.pf2'))
     parser.add_argument('-j', type=int, default=8)
     args = parser.parse_args()
+    if args.usb2_front and not args.usb2:
+        parser.error('--usb2-front requires --usb2')
+    if args.usb_network_root and not args.usb2:
+        parser.error('--usb-network-root requires --usb2')
     repo = Path(__file__).resolve().parents[1]
     root = repo.parent
     work = args.output_dir.resolve()
@@ -55,6 +65,21 @@ def main():
         parser.error('BusyBox does not exist')
     touch_files = ''
     touch_config = ''
+    usb_files = ''
+    usb_config = ''
+    if args.usb2:
+        mouse = work / 'usb-mouse-events'
+        run('aarch64-linux-gnu-gcc', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
+            root / 'linux-enablement-mac-alpha/tools/usb-mouse-events.c', '-o', mouse)
+        hub = work / 'usb-hub-status'
+        run('aarch64-linux-gnu-gcc', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
+            root / 'linux-enablement-mac-alpha/tools/usb-hub-status.c', '-o', hub)
+        usb_files = (f'file /bin/usb-status {fixture / "usb-status"} 755 0 0\n' +
+                     f'file /bin/usb-mouse-events {mouse} 755 0 0\n' +
+                     f'file /bin/usb-hub-status {hub} 755 0 0\n')
+        usb_config = (fixture / 'usb2.config').read_text()
+        if args.usb2_front:
+            usb_config += 'CONFIG_SPMI=y\nCONFIG_SPMI_APPLE=y\nCONFIG_TYPEC_SN201202X=y\n'
     if args.touchpad_firmware:
         firmware = args.touchpad_firmware.resolve()
         if any(c.isspace() for c in str(firmware)):
@@ -79,15 +104,36 @@ def main():
                         'CONFIG_GPIOLIB=y\nCONFIG_GPIO_MACSMC=y\n'
                         'CONFIG_FB_DEVICE=y\n')
     initlist = work / 'initramfs.list'
+    if args.usb_network_root:
+        network = args.usb_network_root.resolve()
+        for required in ('bin/iw', 'bin/ip', 'bin/timeout',
+                         'lib/firmware/rtlwifi/rtl8188eufw.bin'):
+            if not (network / required).is_file():
+                parser.error(f'network root lacks {required}')
+        for path in sorted(network.rglob('*')):
+            relative = path.relative_to(network).as_posix()
+            if any(c.isspace() for c in str(path)):
+                parser.error('network root paths must not contain whitespace')
+            if path.is_symlink():
+                parser.error('provide dereferenced network files, not symlinks')
+            if relative == 'bin' or (args.touchpad_firmware and relative in ('lib', 'lib/firmware')):
+                continue
+            if path.is_dir():
+                usb_files += f'dir /{relative} 755 0 0\n'
+            elif path.is_file():
+                mode = '755' if relative.startswith(('bin/', 'lib/', 'lib64/')) else '644'
+                usb_files += f'file /{relative} {path} {mode} 0 0\n'
+        usb_files += f'file /bin/usb-network-test {fixture / "usb-network-test"} 755 0 0\n'
+        usb_config += (fixture / 'usb-network.config').read_text()
     initlist.write_text(''.join(f'dir /{d} 755 0 0\n' for d in ('bin', 'dev', 'proc', 'sys', 'tmp')) +
                         'nod /dev/console 600 0 0 c 5 1\n'
                         'nod /dev/null 666 0 0 c 1 3\n' +
                         f'file /bin/busybox {busybox} 755 0 0\n' +
                         'slink /bin/sh /bin/busybox 777 0 0\n' +
-                        f'file /init {fixture / "init"} 755 0 0\n' + touch_files)
+                        f'file /init {fixture / "init"} 755 0 0\n' + touch_files + usb_files)
     config = work / 'linux.config'
     config.write_text((fixture / 'linux.config').read_text() +
-                      touch_config + f'CONFIG_INITRAMFS_SOURCE="{initlist}"\n')
+                      touch_config + usb_config + f'CONFIG_INITRAMFS_SOURCE="{initlist}"\n')
     make = ['make', '-C', linux, f'O={work / "linux-build"}',
             'ARCH=arm64', 'CROSS_COMPILE=aarch64-linux-gnu-']
     run(*make, f'KCONFIG_ALLCONFIG={config}', 'allnoconfig')
@@ -102,6 +148,20 @@ def main():
                         'FB_DEVICE'):
             if f'CONFIG_{feature}=y' not in enabled:
                 raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
+    if args.usb2:
+        for feature in ('USB', 'USB_XHCI_HCD', 'USB_DWC3_APPLE', 'USB_DWC3_HOST',
+                        'USB_HID', 'PHY_APPLE_ATC', 'PHY_APPLE_J700_REPEATER',
+                        'I2C_APPLE', 'PINCTRL_APPLE_GPIO', 'APPLE_PMGR_PWRSTATE'):
+            if f'CONFIG_{feature}=y' not in enabled:
+                raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
+    if args.usb2_front:
+        for feature in ('SPMI_APPLE', 'TYPEC_SN201202X'):
+            if f'CONFIG_{feature}=y' not in enabled:
+                raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
+    if args.usb_network_root:
+        for feature in ('NET', 'INET', 'CFG80211', 'MAC80211', 'RTL8XXXU', 'USB_RTL8152'):
+            if f'CONFIG_{feature}=y' not in enabled:
+                raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
     run(*make, f'-j{args.j}', 'Image')
     run('make', '-C', m1n1, f'-j{args.j}', 'RELEASE=1', 'CHAINLOADING=0',
         'USE_CLANG=1', 'BUILDSTD=1')
@@ -109,6 +169,8 @@ def main():
     dtb = work / 'boot.dtb'
     run('aarch64-linux-gnu-gcc', '-E', '-nostdinc', '-undef', '-D__DTS__',
         *(['-DNEO_TOUCHPAD'] if args.touchpad_firmware else []),
+        *(['-DNEO_USB2'] if args.usb2 else []),
+        *(['-DNEO_USB2_FRONT'] if args.usb2_front else []),
         '-x', 'assembler-with-cpp', '-I', repo, '-I', linux / 'include',
         fixture / 'boot.dts', '-o', pre)
     run('dtc', '-I', 'dts', '-O', 'dtb', '-o', dtb, pre)

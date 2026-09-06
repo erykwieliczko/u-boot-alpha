@@ -9,6 +9,58 @@ drivers are not enabled. The built-in keyboard uses Linux DockChannel HID and
 the Apple HID driver; an optional firmware argument enables the touchpad test.
 Physical UART remains an output-only early printk console.
 
+Optional USB2 fixture
+---------------------
+
+``--usb2`` adds the shared T8140 DWC3 host, two translating DARTs, T8130
+USB2/dummy-PIPE profile and an explicitly ordered J700 I2C repeater supplier.
+``--usb2-front`` additionally services HPM1 (SPMI USID 0xa) using the existing
+SN201202x driver. The rear HPM0/debug connector remains unbound. Front input
+index 1 is preserved; it never selects the rear SuperSpeed mux or tears down
+the shared host on disconnect. A real NONE-to-HOST notification synchronizes
+the shared USB2 PHY once. This can disconnect/re-enumerate the onboard hub.
+
+On 2026-09-07 the HPM-unbound profile enumerated only the onboard 2109:2122
+hub. Both downstream ports reported power but no connection. The front-HPM
+profile then enumerated the external 05e3:0610 hub, 258a:0017 HID mouse,
+0bda:8179 Wi-Fi adapter and the hub's 0bda:8153 Ethernet adapter. UART and
+built-in input survived. Enumeration alone is not network or mouse-event
+acceptance. General cold boot, suspend/resume, rear-port use and simultaneous
+two-port hotplug remain unqualified.
+
+The following networking boot loaded RTL8188EU firmware revision 28.0,
+registered ``wlan0`` and ``eth0``, and successfully completed a passive
+``iw`` scan with three BSS results. Association, DHCP, packet throughput and
+Ethernet carrier were not tested. The USB mouse's evdev monitor opened the
+SINOWEALTH pointer successfully; movement/click acceptance still requires
+the user's physical input.
+
+The fixture includes ``/bin/usb-hub-status`` (standard GET_DESCRIPTOR and
+GET_STATUS only), a bounded sysfs inventory, and ``/bin/usb-mouse-events``
+(ordinary evdev, no exclusive grab). The mouse probe also reports to printk.
+
+``--usb-network-root /absolute/root`` optionally embeds AArch64 ``bin/iw``,
+``bin/ip``, ``bin/timeout``, their matching ELF interpreter/shared libraries,
+``lib/firmware/rtlwifi/rtl8188eufw.bin`` and regulatory data. Supply ordinary
+files, not symlinks, and no credentials. It enables stock rtl8xxxu/mac80211
+and r8152 support. The RTL8153 firmware variants belong under
+``lib/firmware/rtl_nic/``. The bounded userspace test brings up the discovered
+wireless interface and performs a passive scan with ``iw``; it does not join
+a network. Results are in ``/tmp/usb-wifi-scan.txt`` with a summary in printk.
+
+Cleanroom source contracts used for this experimental path:
+``NEO_USB2_FOR_CLEANROOM.md``, ``NEO_USB2_IMPLEMENTATION_SUPPLEMENT.md``,
+``NEO_USB2_PIPE_DUMMY_LOCK_SUPPLEMENT.md`` and
+``NEO_USB2_FRONT_HPM1_FOR_CLEANROOM.md``. These describe behavior audited at
+``bedd2558acdf8deef4bd4ad2c3cf41873f43a7df``; they were not source transplants.
+The PIPE bootstrap must enable its dummy backend, not just select the mux.
+Repeated dummy selection is verified and idempotent; an unnecessary live
+lock handshake was the first observed host-startup failure.
+
+Host-side checks in ``linux-enablement-mac-alpha/tests/`` exercise actual
+repeater/PIPE/role C functions with fault injection and compile all three DT
+profiles. They are software tests, not hardware emulation or qualification.
+
 Required sibling repositories are m1n1-alpha, linux-alpha and grub-alpha.
 The optional touchpad fixture also needs linux-enablement-mac-alpha for its
 evdev monitor and framebuffer demo sources.

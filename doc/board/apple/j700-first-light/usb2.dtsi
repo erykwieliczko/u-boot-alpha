@@ -1,0 +1,148 @@
+/* SPDX-License-Identifier: GPL-2.0+ OR MIT */
+/* J700 retained-power, preattached USB2 test. HPM/debug routing remains unbound. */
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/pinctrl/apple.h>
+
+/ {
+	usb_refclk: usb-refclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+	};
+};
+
+&{/soc} {
+	usb_pmgr: power-management@300700000 {
+		compatible = "apple,t8140-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		reg = <3 0x00700000 0 0x14000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		ps_gpio: power-controller@120 {
+			compatible = "apple,t8140-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x120 4>;
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			label = "gpio";
+		};
+		ps_i2c2: power-controller@2d8 {
+			compatible = "apple,t8140-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x2d8 4>;
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			label = "i2c2";
+		};
+		ps_usb_aon: power-controller@3e0 {
+			compatible = "apple,t8140-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x3e0 4>;
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			label = "atc0_usb_aon";
+		};
+		ps_usb_common: power-controller@3e8 {
+			compatible = "apple,t8140-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x3e8 4>;
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			label = "atc0_common";
+			power-domains = <&ps_usb_aon>;
+		};
+		ps_usb: power-controller@3f0 {
+			compatible = "apple,t8140-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x3f0 4>;
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			label = "atc0_usb";
+			power-domains = <&ps_usb_common>;
+		};
+	};
+
+	ap_gpio: pinctrl@31a000000 {
+		compatible = "apple,t8140-pinctrl", "apple,t8103-pinctrl";
+		reg = <3 0x1a000000 0 0x100000>;
+		power-domains = <&ps_gpio>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		gpio-ranges = <&ap_gpio 0 0 216>;
+		gpio-reserved-ranges = <50 1>, <134 1>;
+		apple,npins = <216>;
+		apple,no-regcache;
+		i2c2_pins: i2c2-pins {
+			pinmux = <APPLE_PINMUX(165, 1)>, <APPLE_PINMUX(164, 1)>;
+		};
+	};
+
+	i2c2: i2c@385018000 {
+		compatible = "apple,t8140-i2c", "apple,i2c";
+		reg = <3 0x85018000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1110 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_i2c2>;
+		clocks = <&usb_refclk>;
+		clock-frequency = <100000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2c2_pins>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		usb_repeater: repeater@21 {
+			compatible = "apple,j700-usb2-repeater";
+			reg = <0x21>;
+			#phy-cells = <0>;
+			hub-hold-gpios = <&ap_gpio 142 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	usb_atc: phy@40b000000 {
+		compatible = "apple,t8130-atcphy", "apple,t8122-atcphy";
+		reg = <4 0x0b000000 0 0x4c000>, <4 0x0b050000 0 0x4000>,
+		      <4 0x08000000 0 0x8000>, <4 0x0aa90000 0 0x4000>,
+		      <4 0x0aa84000 0 0x4000>, <4 0x0a300000 0 0x4000>;
+		reg-names = "core", "lpdptx", "axi2af", "usb2phy", "pipehandler", "usb2phy-reg";
+		power-domains = <&ps_usb>;
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		phys = <&usb_repeater>;
+		phy-names = "usb2-repeater";
+		apple,usb2-fixed-host;
+		apple,tunable-usb2phy-reg-dflt = <0x80 0xff 0x17>, <0x84 0x3ff 0xc8>,
+			<0x88 0xff 5>, <0x8c 0x3ff 5>;
+	};
+
+	usb_dart0: iommu@40af00000 {
+		compatible = "apple,t8140-dart", "apple,t8110-dart";
+		reg = <4 0x0af00000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1248 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_usb>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x4000 0 0xffff0000>;
+	};
+	usb_dart1: iommu@40af80000 {
+		compatible = "apple,t8140-dart", "apple,t8110-dart";
+		reg = <4 0x0af80000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1248 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_usb>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x4000 0 0xffff0000>;
+	};
+	usb_host: usb@40a280000 {
+		compatible = "apple,t8140-dwc3", "apple,t8103-dwc3";
+		reg = <4 0x0a280000 0 0xcd00>, <4 0x0a28cd00 0 0x3200>;
+		reg-names = "dwc3-core", "dwc3-apple";
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1244 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_usb>;
+		iommus = <&usb_dart0 0>, <&usb_dart1 1>;
+		resets = <&usb_atc>;
+		phys = <&usb_atc PHY_TYPE_USB2>, <&usb_atc PHY_TYPE_USB3>;
+		phy-names = "usb2-phy", "usb3-phy";
+		dr_mode = "host";
+		maximum-speed = "high-speed";
+		apple,usb2-fixed-host;
+	};
+};
+
+#ifdef NEO_USB2_FRONT
+#include "usb2-front.dtsi"
+#endif

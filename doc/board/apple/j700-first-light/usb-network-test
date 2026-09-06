@@ -1,0 +1,28 @@
+#!/bin/sh
+# Normal nl80211 tooling; no credentials, association, or private driver ioctls.
+/bin/busybox sleep 12
+echo '<6>USB_WIFI: starting interface inventory' > /dev/kmsg
+/bin/iw dev > /tmp/usb-iw-dev.txt 2>&1
+/bin/busybox cat /tmp/usb-iw-dev.txt > /dev/kmsg
+/bin/ip -brief link > /tmp/usb-ip-link.txt 2>&1
+/bin/busybox cat /tmp/usb-ip-link.txt > /dev/kmsg
+found=0
+for path in /sys/class/net/*; do
+    [ -d "$path/phy80211" ] || continue
+    iface=${path##*/}
+    found=1
+    echo "<6>USB_WIFI: bringing up $iface" > /dev/kmsg
+    if ! /bin/timeout -k 2 10 /bin/ip link set dev "$iface" up > /tmp/usb-wifi-up.txt 2>&1; then
+        /bin/busybox cat /tmp/usb-wifi-up.txt > /dev/kmsg
+        echo '<3>USB_WIFI: interface-up failed' > /dev/kmsg
+        continue
+    fi
+    /bin/timeout -k 2 25 /bin/iw dev "$iface" scan passive > /tmp/usb-wifi-scan.txt 2>&1
+    result=$?
+    count=$(/bin/busybox grep -c '^BSS ' /tmp/usb-wifi-scan.txt)
+    echo "<6>USB_WIFI: scan exit=$result BSS=$count; full output /tmp/usb-wifi-scan.txt" > /dev/kmsg
+    if [ "$result" != 0 ]; then
+        /bin/busybox cat /tmp/usb-wifi-scan.txt > /dev/kmsg
+    fi
+done
+echo "<6>USB_WIFI: bounded test complete; wireless interface found=$found" > /dev/kmsg
