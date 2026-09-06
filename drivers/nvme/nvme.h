@@ -712,6 +712,13 @@ struct nvme_ops {
 	 * poll_cmd - Service controller firmware while waiting for completion.
 	 */
 	void (*poll_cmd)(struct nvme_queue *nvmeq);
+	/**
+	 * poll_ctrl - Service firmware while waiting for controller state.
+	 *
+	 * May be called before any queues have been allocated.
+	 * @dev: NVM Express controller
+	 */
+	void (*poll_ctrl)(struct nvme_dev *dev);
 };
 
 /**

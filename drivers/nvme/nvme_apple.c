@@ -67,6 +67,21 @@ struct ans_nvmmu_tcb {
 static_assert(sizeof(struct ans_nvmmu_tcb) == ANS_NVMMU_TCB_PITCH,
 	      "invalid Apple NVMMU TCB size");
 
+struct apple_nvme_hw {
+	/* Separate NVMMU, explicit I/O bases and direction-only TCBs. */
+	bool linear_v2;
+	bool ns_one_only;
+};
+
+static const struct apple_nvme_hw apple_nvme_t8132 = {
+	.linear_v2 = true,
+	.ns_one_only = true,
+};
+
+static const struct apple_nvme_hw apple_nvme_t8140 = {
+	.linear_v2 = true,
+};
+
 struct apple_nvme_priv {
 	struct nvme_dev ndev;
 	void *base;		/* NVMe registers */
@@ -78,7 +93,7 @@ struct apple_nvme_priv {
 	struct apple_rtkit *rtk;
 	struct ans_nvmmu_tcb *tcbs[NVME_Q_NUM]; /* Submission queue TCBs */
 	u32 __iomem *q_db[NVME_Q_NUM]; /* Submission queue doorbell */
-	bool is_t8132;
+	const struct apple_nvme_hw *hw;
 };
 
 static int apple_nvme_setup_queue(struct nvme_queue *nvmeq)
@@ -96,7 +111,7 @@ static int apple_nvme_setup_queue(struct nvme_queue *nvmeq)
 	}
 
 	priv->tcbs[nvmeq->qid] =
-		(void *)memalign(priv->is_t8132 ? SZ_16K : 4096,
+		(void *)memalign(priv->hw->linear_v2 ? SZ_16K : 4096,
 				 ANS_NVMMU_TCB_SIZE);
 	if (!priv->tcbs[nvmeq->qid])
 		return -ENOMEM;
@@ -126,10 +141,10 @@ static void apple_nvme_configure_queue(struct nvme_queue *nvmeq)
 	struct apple_nvme_priv *priv =
 		container_of(nvmeq->dev, struct apple_nvme_priv, ndev);
 
-	if (!priv->is_t8132 || nvmeq->qid != NVME_IO_Q)
+	if (!priv->hw->linear_v2 || nvmeq->qid != NVME_IO_Q)
 		return;
 
-	/* T8132 requires both queue bases after creation, CQ before SQ. */
+	/* Linear v2 requires both queue bases after creation, CQ before SQ. */
 	nvme_writeq((ulong)nvmeq->cqes, priv->base + ANS_IOQ_CQ_BASE);
 	nvme_writeq((ulong)nvmeq->sq_cmds, priv->base + ANS_IOQ_SQ_BASE);
 }
@@ -153,7 +168,7 @@ static void apple_nvme_submit_cmd(struct nvme_queue *nvmeq,
 
 	tcb = ((void *)priv->tcbs[nvmeq->qid]) + tail * ANS_NVMMU_TCB_PITCH;
 	memset(tcb, 0, sizeof(*tcb));
-	if (priv->is_t8132) {
+	if (priv->hw->linear_v2) {
 		tcb->opcode = 0;
 		if (!cmd->common.prp1)
 			tcb->flags = 0;
@@ -175,14 +190,19 @@ static void apple_nvme_submit_cmd(struct nvme_queue *nvmeq,
 	writel(tail, priv->q_db[nvmeq->qid]);
 }
 
-static void apple_nvme_poll_cmd(struct nvme_queue *nvmeq)
+static void apple_nvme_poll_ctrl(struct nvme_dev *dev)
 {
 	struct apple_nvme_priv *priv =
-		container_of(nvmeq->dev, struct apple_nvme_priv, ndev);
+		container_of(dev, struct apple_nvme_priv, ndev);
 	int ret = apple_rtkit_poll(priv->rtk, 0);
 
 	if (ret && ret != -ETIMEDOUT)
 		debug("%s: RTKit poll returned %d\n", __func__, ret);
+}
+
+static void apple_nvme_poll_cmd(struct nvme_queue *nvmeq)
+{
+	apple_nvme_poll_ctrl(nvmeq->dev);
 }
 
 static void apple_nvme_complete_cmd(struct nvme_queue *nvmeq,
@@ -250,12 +270,16 @@ static int apple_nvme_probe(struct udevice *dev)
 	u32 ctrl, stat, phandle;
 	int ret;
 
-	priv->is_t8132 = device_is_compatible(dev, "apple,t8132-nvme-ans2");
+	static const struct apple_nvme_hw legacy;
+
+	priv->hw = (const void *)dev_get_driver_data(dev);
+	if (!priv->hw)
+		priv->hw = &legacy;
 	priv->base = dev_remap_addr_name(dev, "nvme");
 	if (!priv->base)
 		return -EINVAL;
 
-	if (priv->is_t8132) {
+	if (priv->hw->linear_v2) {
 		priv->nvmmu = dev_remap_addr_name(dev, "nvmmu");
 		if (!priv->nvmmu)
 			return -EINVAL;
@@ -268,8 +292,8 @@ static int apple_nvme_probe(struct udevice *dev)
 		return -EINVAL;
 	priv->asc = map_sysmem(addr, 0);
 
-	/* Linux owns the sole reset at the T8132 OS boundary. */
-	if (!priv->is_t8132) {
+	/* Secure-BAR variants reuse the powered, inherited firmware domain. */
+	if (!priv->hw->linear_v2) {
 		ret = reset_get_bulk(dev, &priv->resets);
 		if (ret < 0)
 			return ret;
@@ -320,32 +344,33 @@ static int apple_nvme_probe(struct udevice *dev)
 	}
 
 	writel(ANS_LINEAR_SQ_CTRL_EN, priv->base + ANS_LINEAR_SQ_CTRL);
-	writel(priv->is_t8132 ?
+	writel(priv->hw->linear_v2 ?
 	       (((ANS_MAX_QUEUE_DEPTH - 1) << 16) |
 		(ANS_MAX_QUEUE_DEPTH - 1)) :
 	       ((ANS_MAX_QUEUE_DEPTH << 16) | ANS_MAX_QUEUE_DEPTH),
 	       priv->base + ANS_MAX_PEND_CMDS_CTRL);
 
-	if (!priv->is_t8132)
+	if (!priv->hw->linear_v2)
 		writel(readl(priv->base + ANS_UNKNOWN_CTRL) &
 		       ~ANS_PRP_NULL_CHECK, priv->base + ANS_UNKNOWN_CTRL);
 
 	strcpy(priv->ndev.vendor, "Apple");
-	if (priv->is_t8132) {
+	if (priv->hw->linear_v2) {
 		priv->ndev.q_depth = ANS_MAX_QUEUE_DEPTH;
 		priv->ndev.admin_q_depth = ANS_MAX_QUEUE_DEPTH;
 		priv->ndev.queue_alignment = SZ_16K;
 		priv->ndev.max_transfer_shift_limit = 12;
 		priv->ndev.quirks = NVME_QUIRK_PREALLOCATE_IO_QUEUE |
 			NVME_QUIRK_SKIP_SET_NUM_QUEUES |
-			NVME_QUIRK_NS_ONE_ONLY |
 			NVME_QUIRK_MINIMAL_QUEUE_FLAGS;
+		if (priv->hw->ns_one_only)
+			priv->ndev.quirks |= NVME_QUIRK_NS_ONE_ONLY;
 	}
 
-	writel(priv->is_t8132 ? ANS_MAX_QUEUE_DEPTH - 1 :
+	writel(priv->hw->linear_v2 ? ANS_MAX_QUEUE_DEPTH - 1 :
 	       (ANS_NVMMU_TCB_SIZE / ANS_NVMMU_TCB_PITCH) - 1,
 	       priv->nvmmu + ANS_NVMMU_NUM);
-	if (!priv->is_t8132)
+	if (!priv->hw->linear_v2)
 		writel(0, priv->base + ANS_MODESEL);
 
 	priv->ndev.bar = priv->base;
@@ -419,10 +444,14 @@ static const struct nvme_ops apple_nvme_ops = {
 	.submit_cmd = apple_nvme_submit_cmd,
 	.complete_cmd = apple_nvme_complete_cmd,
 	.poll_cmd = apple_nvme_poll_cmd,
+	.poll_ctrl = apple_nvme_poll_ctrl,
 };
 
 static const struct udevice_id apple_nvme_ids[] = {
-	{ .compatible = "apple,t8132-nvme-ans2" },
+	{ .compatible = "apple,t8140-nvme-ans3",
+	  .data = (ulong)&apple_nvme_t8140 },
+	{ .compatible = "apple,t8132-nvme-ans2",
+	  .data = (ulong)&apple_nvme_t8132 },
 	{ .compatible = "apple,t8103-nvme-ans2" },
 	{ .compatible = "apple,nvme-ans2" },
 	{ /* sentinel */ }

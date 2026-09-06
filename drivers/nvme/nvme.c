@@ -55,6 +55,7 @@ static size_t nvme_cq_allocation(struct nvme_queue *nvmeq)
 
 static int nvme_wait_csts(struct nvme_dev *dev, u32 mask, u32 val)
 {
+	const struct nvme_ops *ops = dev->udev->driver->ops;
 	int timeout;
 	ulong start;
 
@@ -63,6 +64,9 @@ static int nvme_wait_csts(struct nvme_dev *dev, u32 mask, u32 val)
 
 	start = get_timer(0);
 	while (get_timer(start) < timeout) {
+		/* Firmware-mediated controllers may need host messages to become ready. */
+		if (ops && ops->poll_ctrl)
+			ops->poll_ctrl(dev);
 		if ((readl(&dev->bar->csts) & mask) == val)
 			return 0;
 	}

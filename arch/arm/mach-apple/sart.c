@@ -129,7 +129,8 @@ struct apple_sart *sart_init(ofnode node)
 
 	if (ofnode_device_is_compatible(node, "apple,t8103-sart")) {
 		sart_version = 2;
-	} else if (ofnode_device_is_compatible(node, "apple,t6000-sart")) {
+	} else if (ofnode_device_is_compatible(node, "apple,t6000-sart") ||
+		   ofnode_device_is_compatible(node, "apple,t8140-sart")) {
 		sart_version = 3;
 	} else {
 		printf("sart: unknown SART compatible: %sd\n",

@@ -22,6 +22,7 @@ apps-y += dtbdump
 endif
 apps-$(CONFIG_BOOTEFI_TESTAPP_COMPILE) += testapp
 apps-y += dbginfodump
+apps-$(CONFIG_CMD_NVME) += blockread
 
 obj-$(CONFIG_CMD_BOOTEFI_HELLO) += helloworld_efi.o
 obj-$(CONFIG_EFI_BOOTMGR) += efi_bootmgr.o

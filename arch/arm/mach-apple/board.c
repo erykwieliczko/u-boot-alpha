@@ -1183,11 +1183,18 @@ int board_late_init(void)
 	phys_addr_t addr;
 	int ret;
 
-	/* No automatic peripheral discovery for the explicit J700 display test. */
+	/* No automatic peripheral discovery for the explicit J700 console. */
 	if (of_machine_is_compatible("apple,j700") &&
 	    of_machine_is_compatible("apple,t8140") &&
-	    ofnode_read_bool(ofnode_path("/chosen"), "asahi,display-only"))
-		return 0;
+	    ofnode_read_bool(ofnode_path("/chosen"), "asahi,display-only")) {
+		if (!IS_ENABLED(CONFIG_NVME_APPLE))
+			return 0;
+		/* Provide a real, reserved destination for explicit file loads. */
+		ret = lmb_alloc(SZ_64M, &addr);
+		if (ret)
+			return log_msg_ret("reserve console load buffer", ret);
+		return env_set_hex("loadaddr", addr);
+	}
 
 #if CONFIG_IS_ENABLED(APPLE_MTP_KEYB)
 	if (apple_j713_disk_boot()) {

@@ -12,6 +12,9 @@
 		serial0 = &serial0;
 		mtp = &mtp;
 		keyboard = &keyboard;
+		ans = &ans;
+		ans-mbox = &ans_mbox;
+		sart-ans = &sart_ans;
 	};
 
 	chosen {
@@ -82,6 +85,28 @@
 			reg-names = "rmt-config", "rmt-data", "config", "data";
 			apple,fifo-size = <2048>;
 			apple,helper-cpu = <&mtp>;
+		};
+
+		/* Powered by iBoot; m1n1 refreshes these ranges from the live ADT. */
+		ans_mbox: mailbox@389608000 {
+			compatible = "apple,asc-mailbox-v4";
+			reg = <0x3 0x89608000 0 0x4000>;
+			#mbox-cells = <0>;
+		};
+
+		sart_ans: sart@38dc50000 {
+			compatible = "apple,t8140-sart";
+			reg = <0x3 0x8dc50000 0 0xc000>;
+		};
+
+		ans: nvme@3cdcc0000 {
+			compatible = "apple,t8140-nvme-ans3";
+			reg = <0x3 0xcdcc0000 0 0x40000>,
+			      <0x3 0x8dcc0000 0 0x60000>,
+			      <0x3 0x89600000 0 0x4000>;
+			reg-names = "nvme", "nvmmu", "ans";
+			mboxes = <&ans_mbox>;
+			apple,sart = <&sart_ans>;
 		};
 	};
 };

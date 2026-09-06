@@ -5,8 +5,9 @@ MacBook Neo (J700): inherited console bring-up
 
 This is a **console bring-up** T8140/A18 Pro configuration, not a full
 platform port. It retains iBoot's scanout through m1n1 and exposes U-Boot's
-video, built-in keyboard and physical UART consoles. Storage, USB, Linux boot, cold
-UART initialization and system reset are not provided by this configuration.
+video, built-in keyboard and physical UART consoles, with manually probed ANS
+storage. USB, Linux boot, cold UART initialization and system reset are not
+provided by this configuration.
 
 Build and package
 -----------------
@@ -50,8 +51,8 @@ usable DRAM as normal memory, and the inherited framebuffer separately as
 normal non-cacheable memory. Other T8140 apertures are intentionally absent.
 ``simple_video`` uses the live padded stride, not width times pixel size.
 
-The environment is RAM-only. There is no automatic bootflow, storage scan,
-or USB initialization. ``ARCH_APPLE`` currently forces USB
+The environment and EFI variables are RAM-only. There is no automatic bootflow,
+storage scan or USB initialization. ``ARCH_APPLE`` currently forces USB
 core/command support; the XHCI core is selected to satisfy that build dependency,
 but no host-controller frontend or USB node is enabled. Existing Apple
 configurations retain their original behavior.
@@ -66,6 +67,115 @@ This is not an interactive UEFI shell. Commands can be entered through the
 built-in keyboard or physical UART. Booting a full OS requires a
 complete device tree and additional handoff support, not simply removing the
 display-only flag from this sparse tree.
+
+Polled ANS storage
+------------------
+
+``nvme scan`` explicitly starts storage discovery. Nothing scans storage in
+the board's automatic console path, and the environment stays in RAM. The
+``apple,t8140-nvme-ans3`` variant uses the live-ADT resources transferred by
+m1n1: secure NVMe BAR, separate NVMMU, ASC control and mailbox. CoastGuard
+SART is identified as ``apple,t8140-sart`` and uses its ADT-reported version-3
+entry layout. Existing active entries are protected, including firmware and
+PMU mappings. Its inherited accessible power state is retained; no T8132
+power/reset sequence is applied to Neo.
+
+The tested firmware boundary has ASC RUN set, the NVMe controller disabled,
+and linear submission enabled. U-Boot wakes the inherited RTKit instance,
+allocates its own shared buffers and preserves the existing SART entries.
+The variant uses 64-entry, 16-KiB-aligned queues, explicit I/O queue bases,
+direction-only TCBs, minimal queue flags and a conservative 4-KiB command
+transfer limit. All Identify-reported namespaces are enumerated. T8132's
+namespace-one restriction and older Apple queue behavior remain unchanged.
+This does not establish Neo native Linux reset/power/IRQ ownership.
+
+Controller-ready/shutdown waits service RTKit, just like command-completion
+waits. Firmware can still require host message handling after its AP power
+acknowledgment. Merely polling CSTS produced startup timeouts on Neo; the
+poll hook is queue-independent because controller disable happens before
+queues are allocated. Drivers without this hook keep their existing behavior.
+
+Inspect the current disk, not an earlier machine's partition numbers::
+
+    nvme scan
+    nvme info
+    nvme detail
+    nvme part
+    bdinfo
+
+The board reserves a 64-MiB, 2-MiB-aligned load buffer from the live LMB map
+and sets ``loadaddr`` to it. Keep explicit file loads within that buffer; do
+not copy an address from another boot. Identify the intended development ESP
+by its current GPT type, unique GUID, filesystem and contents before filesystem tests. Raw ``nvme
+write`` is not part of this procedure.
+
+The build also produces ``lib/efi_loader/blockread.efi`` when
+``CONFIG_CMD_NVME=y``. This standalone, read-only application uses standard
+EFI Block I/O, not Apple MMIO. It reads the first and last block of every
+present, non-removable, whole-device handle twice, compares the bytes and
+prints CRC32 values. It never calls WriteBlocks or resets a controller. It
+returns to U-Boot instead of exiting boot services. It can be transferred to
+RAM using the standard ``loads`` S-record command, then run with::
+
+    bootefi ${loadaddr}:${filesize} ${fdtcontroladdr}
+
+For persistence testing, put this application under a new, non-boot filename
+on the positively identified development ESP using ``fatwrite``. Select the
+containing NVMe device with ``nvme device``, then issue ``nvme flush``.
+This command dispatches through the block driver's synchronous namespace
+Flush operation and propagates failures; a FAT write alone is not a durable
+write guarantee. After a fresh hardware reset and RAM upload, load the file
+with ``fatload``, compare SHA-256 against the host-built image, and execute it.
+Do not install it as ``EFI/BOOT/BOOTAA64.EFI`` or modify existing boot files.
+
+Storage validation (2026-09-06)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The physical J700 reported firmware ``2973.120``, NVMe revision 1.1, and four
+active namespaces with 4096-byte logical blocks:
+
+=========== ================ ==================
+Namespace   Blocks           Capacity
+=========== ================ ==================
+1           61279344         251000193024 bytes
+2           2048             8 MiB
+3           768              3 MiB
+4           32768            128 MiB
+=========== ================ ==================
+
+Controller setup and namespace discovery succeeded with the block cache
+disabled (``blkcache configure 0 0``). Two 1-MiB reads from namespace 1 LBA 0,
+with different RAM poison patterns before each read, produced SHA-256
+``57ad08abf1c668632259a376b3741b3a6a48a034212d7270802d19f3c7e900dd``.
+These reads exercise multiple wraps of the 64-entry queue. The inherited
+SART entries 0, 1 and 3 were unchanged after controller and EFI tests.
+
+The development ESP was FAT32, label ``EFI-M1N1``, partition GUID
+``1d6037ea-0018-478d-b204-9f2862d76322`` (then ``nvme 0:4``). This identifies
+the test only, not a portable partition selection rule. A 16561-byte
+``nvmetest.efi`` was written through FAT and followed by namespace Flush.
+After an external hardware reset without orderly ANS shutdown, a fresh
+RAM-uploaded U-Boot read the file with SHA-256
+``cc49deb29a361a0238b87a3baf61b07d81513a0c087bbd8cd717b5bf00e96362``,
+matching the host-built application. Executing that disk-loaded EFI image
+passed the first/last-block comparisons for all four namespaces, with
+differently poisoned buffers and zero block-cache hits.
+
+A second persistence test wrote 1 MiB of repeated ``NEO!`` bytes to a separate
+temporary FAT file, flushed the containing namespace and immediately requested
+another external reset. The same final, non-diagnostic build discovered all
+four namespaces again. Its uncached file read matched the independently
+computed SHA-256
+``3f46cb4acdc0cf2fb047b790af916546e5e09d71c9534e2f98ef0b2afa89fbb9``.
+This exercises repeated queue wraparound on both writes and reads. The large
+temporary file was removed after verification; ``nvmetest.efi`` remains for
+interactive testing. Both final-build boots had temporary trace prints removed.
+
+The final configuration keeps EFI variables in RAM. A variable file created
+by the initial EFI test was removed, and the final EFI test did not recreate
+it. Installed stage1, boot files, GPT and macOS/recovery contents were not
+changed. These are bounded bring-up tests, not endurance qualification or
+validation of Neo native Linux storage takeover.
 
 Built-in keyboard
 -----------------
