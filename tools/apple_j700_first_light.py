@@ -19,11 +19,23 @@ def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
 
 
+def validate_touchpad_firmware(data):
+    """Check the installer HIDF envelope, without interpreting firmware code."""
+    if len(data) < 32:
+        raise ValueError('touchpad firmware has a truncated HIDF header')
+    magic, version, header, length, iface = struct.unpack_from('<4sIIII', data)
+    if (magic != b'HIDF' or version != 1 or header < 32 or
+            header + length != len(data) or iface >= length):
+        raise ValueError('invalid HIDF touchpad firmware')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--busybox', type=Path, required=True)
     parser.add_argument('--uboot', type=Path, required=True)
+    parser.add_argument('--touchpad-firmware', type=Path,
+                        help='Optional J700 HIDF firmware; enable the touchpad test fixture')
     parser.add_argument('--font', type=Path, default=Path('/usr/share/grub/unicode.pf2'))
     parser.add_argument('-j', type=int, default=8)
     args = parser.parse_args()
@@ -41,16 +53,41 @@ def main():
         parser.error('initramfs source paths must not contain whitespace')
     if not busybox.is_file():
         parser.error('BusyBox does not exist')
+    touch_files = ''
+    touch_config = ''
+    if args.touchpad_firmware:
+        firmware = args.touchpad_firmware.resolve()
+        if any(c.isspace() for c in str(firmware)):
+            parser.error('firmware path must not contain whitespace')
+        data = firmware.read_bytes()
+        try:
+            validate_touchpad_firmware(data)
+        except ValueError as error:
+            parser.error(str(error))
+        viewer = work / 'touchpad-events'
+        run('aarch64-linux-gnu-gcc', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
+            root / 'linux-enablement-mac-alpha/tools/touchpad-events.c', '-o', viewer)
+        demo = work / 'touchpad-demo'
+        run('aarch64-linux-gnu-gcc', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
+            root / 'linux-enablement-mac-alpha/tools/touchpad-demo.c', '-o', demo)
+        touch_files = (''.join(f'dir /{d} 755 0 0\n' for d in
+                              ('lib', 'lib/firmware', 'lib/firmware/apple')) +
+                       f'file /lib/firmware/apple/tpmtfw-j700.bin {firmware} 644 0 0\n' +
+                       f'file /bin/touchpad-events {viewer} 755 0 0\n' +
+                       f'file /bin/touchpad-demo {demo} 755 0 0\n')
+        touch_config = ('CONFIG_HID_MAGICMOUSE=y\nCONFIG_MFD_MACSMC=y\n'
+                        'CONFIG_GPIOLIB=y\nCONFIG_GPIO_MACSMC=y\n'
+                        'CONFIG_FB_DEVICE=y\n')
     initlist = work / 'initramfs.list'
     initlist.write_text(''.join(f'dir /{d} 755 0 0\n' for d in ('bin', 'dev', 'proc', 'sys', 'tmp')) +
                         'nod /dev/console 600 0 0 c 5 1\n'
                         'nod /dev/null 666 0 0 c 1 3\n' +
                         f'file /bin/busybox {busybox} 755 0 0\n' +
                         'slink /bin/sh /bin/busybox 777 0 0\n' +
-                        f'file /init {fixture / "init"} 755 0 0\n')
+                        f'file /init {fixture / "init"} 755 0 0\n' + touch_files)
     config = work / 'linux.config'
     config.write_text((fixture / 'linux.config').read_text() +
-                      f'CONFIG_INITRAMFS_SOURCE="{initlist}"\n')
+                      touch_config + f'CONFIG_INITRAMFS_SOURCE="{initlist}"\n')
     make = ['make', '-C', linux, f'O={work / "linux-build"}',
             'ARCH=arm64', 'CROSS_COMPILE=aarch64-linux-gnu-']
     run(*make, f'KCONFIG_ALLCONFIG={config}', 'allnoconfig')
@@ -60,12 +97,18 @@ def main():
                     'APPLE_RTKIT_HELPER', 'VT_CONSOLE', 'FB_SIMPLE'):
         if f'CONFIG_{feature}=y' not in enabled:
             raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
+    if args.touchpad_firmware:
+        for feature in ('HID_MAGICMOUSE', 'MFD_MACSMC', 'GPIO_MACSMC', 'FW_LOADER',
+                        'FB_DEVICE'):
+            if f'CONFIG_{feature}=y' not in enabled:
+                raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
     run(*make, f'-j{args.j}', 'Image')
     run('make', '-C', m1n1, f'-j{args.j}', 'RELEASE=1', 'CHAINLOADING=0',
         'USE_CLANG=1', 'BUILDSTD=1')
     pre = work / 'boot.pre.dts'
     dtb = work / 'boot.dtb'
     run('aarch64-linux-gnu-gcc', '-E', '-nostdinc', '-undef', '-D__DTS__',
+        *(['-DNEO_TOUCHPAD'] if args.touchpad_firmware else []),
         '-x', 'assembler-with-cpp', '-I', repo, '-I', linux / 'include',
         fixture / 'boot.dts', '-o', pre)
     run('dtc', '-I', 'dts', '-O', 'dtb', '-o', dtb, pre)

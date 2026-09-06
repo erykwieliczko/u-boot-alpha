@@ -4,11 +4,14 @@ J700 Linux first light (experimental)
 This fixture boots unmodified GRUB followed by a single-CPU Linux kernel and
 embedded BusyBox. It is not a production platform DT, installer or replacement
 for installed boot files. The sparse U-Boot tree is deliberately retained;
-Linux storage, touchpad, networking, platform power management, KVM and PMU
+Linux storage, networking, platform power management, KVM and PMU
 drivers are not enabled. The built-in keyboard uses Linux DockChannel HID and
-the Apple HID driver; physical UART remains an output-only early printk console.
+the Apple HID driver; an optional firmware argument enables the touchpad test.
+Physical UART remains an output-only early printk console.
 
 Required sibling repositories are m1n1-alpha, linux-alpha and grub-alpha.
+The optional touchpad fixture also needs linux-enablement-mac-alpha for its
+evdev monitor and framebuffer demo sources.
 Build the J700 U-Boot configuration and ARM64 EFI GRUB first, as described in
 ``../j700.rst``. Supply a statically linked AArch64 BusyBox (do not use a host
 x86 executable). From the workspace::
@@ -166,3 +169,109 @@ timer-tick IRQ-work fallback. A separate two-core ARM64/GICv3 QEMU regression
 test exercised normal IPIs, including IRQ work; it was not an emulation or
 keyboard test of Neo. Existing MTP frame/Neo report unit tests passed (4), and
 m1n1 Python tests passed (10, with 6 toolchain-dependent skips).
+
+Optional touchpad test
+---------------------
+
+Add ``--touchpad-firmware /absolute/path/to/tpmtfw-j700.bin`` to the build
+command. Without this argument the keyboard-only fixture remains unchanged.
+With it, the builder includes the firmware at
+``/lib/firmware/apple/tpmtfw-j700.bin``, enables the existing SMC/GPIO and
+``hid-magicmouse`` drivers, and cross-compiles the sibling
+``linux-enablement-mac-alpha/tools/touchpad-demo.c`` and ``touchpad-events.c``
+as static executables.
+Linux must include the J700/C1FE report decoder in ``hid-magicmouse``.
+The ``multi-touch`` child compatible ``apple,j700-multitouch`` selects it;
+other machines retain the legacy report layout. No GRUB input change is needed.
+
+The init script selects virtual terminal 1 and automatically starts
+``/bin/touchpad-demo`` there with an explicit controlling terminal. It uses
+ordinary fbdev/evdev interfaces, discovers the touchpad by name, queries its
+axis ranges and draws numbered colored contact dots. The border turns green
+while the primary button is down. The displayed count should return to zero
+when all fingers lift. Positions are absolute contacts, not an accelerated
+desktop cursor. No scrollback spam or compositor is involved.
+
+The viewer accepts the framebuffer's actual 32-bit RGB bitfields and stride,
+including 10-bit channels, validates its mapped extent, and limits drawing to
+30 frames per second. The optional fixture explicitly enables and checks
+``CONFIG_FB_DEVICE``: framebuffer console support alone does not expose
+``/dev/fb0`` for userspace drawing. It updates only complete input frames and
+queries slot state after ``SYN_DROPPED``. Q, Esc or Ctrl-C returns to the shell and restores
+text mode and terminal settings. Re-run ``/bin/touchpad-demo`` for graphics or
+``/bin/touchpad-events`` for the original raw event monitor. Concise count,
+button and frame summaries remain available through the kernel/UART log.
+
+For host-only demo checks, compile ``touchpad-demo.c`` with
+``-Wall -Wextra -Werror -fsanitize=address,undefined`` and run ``--self-test``.
+This tests pixel packing, mapping bounds, rendering and evdev state handling;
+it is not a physical framebuffer or trackpad test. Raw evdev contacts do not
+qualify desktop gestures, libinput or palm rejection.
+
+Firmware provenance for the first test was the local
+``UniversalMac_26.6.2_25G83_Restore.ipsw``. Its J700 BuildManifest identity names
+``Firmware/J700_Multitouch.im4p``. The extracted ``mtfw`` plist contains the
+single ``C1FE0,0`` personality, matching the captured J700 ADT. The existing
+Asahi installer HIDF serializer can encode that selected entry directly; its
+older automatic C1FD-only filter would miss this machine. Do not substitute
+another Mac's firmware or send the raw IM4P/XML to the driver. This is
+machine-selected firmware, not proof of additional per-unit personalization.
+No executable firmware was disassembled.
+
+The derived HIDF is 75544 bytes, SHA256
+``9d17f2a0f9fb17f45ac4d2da94fb0e0296d7c1a9511fc799411b6b058c7d7c74``.
+The blob remains installation data and is not committed. Envelope validation
+rejects truncated headers, unsupported formats and out-of-bounds lengths or
+interface patch offsets. Run ``python3 tools/apple_j700_first_light_test.py``
+for the host-only packaging checks.
+
+The optional DT describes SMC core 0x30c600000, mailbox 0x30c608000 and the
+captured nub SRAM region 0x30de00000/+0x100000. Mailbox IRQs 581..584 are in
+semantic empty/not-empty order. SMC follows its ordinary RTKit lifecycle;
+it is independent of the retained MTP session. AFE uses the documented J700
+SMC GPIO 0x13 active-low selection, not J713's GPIO. Existing PowerMethod 2
+handles the firmware transfer and AFE transition. No speculative ``pmIP``
+writes are introduced; this fixture relies on earlier boot stages for the
+existing IPD power state and does not qualify a cold IPD power-up or suspend.
+
+The initial hardware run registered both input interfaces, initialized SMC
+GPIO, transferred firmware and reported readiness at 5.75 seconds, but no evdev
+motion appeared. Continuous capture on 2026-09-07 subsequently proved that
+runtime 0x75 reports reached Linux: the old 38-byte-header decoder rejected
+Neo's 32-byte header, 30-byte contact records and 8-byte opaque suffix.
+All 72 complete runtime samples independently validated this framing using
+the section lengths and record count in the header. No new enable command
+or firmware change was needed. Temporary raw report logging is removed.
+
+The superseding cleanroom parser handoff follows the header count for contact
+presence, not opaque candidate area/state fields. It reuses the existing signed
+coordinate and primary-button convention and synchronizes zero-contact releases.
+It advertises no unverified touch size, tool width, orientation or pressure axes.
+Legacy machines keep their area-based filtering and axes. Strict framing is the
+captured C1FE profile, not a rule proved for every future firmware. The random
+capture establishes framing, not physical axis calibration or click meaning.
+The self-contained contract is in the sibling kernel repository at
+``Documentation/hid/apple-j700-multitouch.rst``; temporary handoff documents
+are not needed to interpret or reproduce the supported parser profile.
+Host ASan/UBSan replay and legacy tests are in
+``linux-enablement-mac-alpha/tests/test_magicmouse_c1fe.py``.
+
+On 2026-09-07 the revised kernel and framebuffer demo were RAM-booted through
+stage2, U-Boot and GRUB. The demo opened the 2408x1506 framebuffer and 16 evdev
+slots with queried X bounds -5499..5499 and Y bounds -6469..164. The operator
+confirmed that it worked perfectly, after previously confirming the keyboard.
+This is functional first-light acceptance, not formal axis calibration or
+qualification of desktop gestures, palm rejection, suspend or cold takeover.
+
+The validated EFI image was 11112448 bytes, SHA256
+``d9ba31001377493e44e2eb9f1670588ebad2e8912dd25dc9e173db2eab534e5c``;
+the RAM chain was 6185197 bytes, SHA256
+``9937d6ec4027668493185463af3e63a93f95405617c2ce401d6bb3efd6598b2a``.
+These identify the hardware-tested build, not a promise that timestamped
+rebuilds will be byte-identical. Host validation passed 6065 parser checks,
+four firmware-envelope tests and the framebuffer demo self-test. Kernel
+checkpatch reported no errors or warnings. No installed boot files were changed.
+
+SMC emitted unknown OSLog messages, and omitted optional MFD children emitted
+missing-node messages; neither blocked GPIO initialization. This is not
+qualification of those unimplemented SMC consumers.

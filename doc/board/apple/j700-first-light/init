@@ -9,4 +9,10 @@ echo '<6>NEO_INITRAMFS: Linux reached BusyBox userspace.' > /dev/kmsg
 echo '<6>NEO_INITRAMFS: two-second userspace timer completed.' > /dev/kmsg
 echo 'Neo Linux RAM-only shell. No disks mounted. Test the built-in keyboard here.'
 echo 'To confirm typing over the debug log: echo KEYBOARD_OK > /dev/kmsg'
+if [ -x /bin/touchpad-demo ]; then
+    echo 'Touchpad demo: move, click, or use multiple fingers. Q returns to the shell.'
+    /bin/busybox chvt 1
+    /bin/busybox setsid -c /bin/touchpad-demo </dev/tty1 >/dev/tty1 2>&1
+    echo 'Restart graphics with /bin/touchpad-demo; raw events with /bin/touchpad-events'
+fi
 exec /bin/sh
