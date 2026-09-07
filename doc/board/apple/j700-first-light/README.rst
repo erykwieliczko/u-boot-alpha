@@ -4,10 +4,66 @@ J700 Linux first light (experimental)
 This fixture boots unmodified GRUB followed by a single-CPU Linux kernel and
 embedded BusyBox. It is not a production platform DT, installer or replacement
 for installed boot files. The sparse U-Boot tree is deliberately retained;
-Linux storage, networking, platform power management, KVM and PMU
-drivers are not enabled. The built-in keyboard uses Linux DockChannel HID and
+Linux storage, CPU power management, KVM and PMU drivers are not enabled by
+this fixture. Networking and battery telemetry are opt-in. The built-in keyboard uses Linux DockChannel HID and
 the Apple HID driver; an optional firmware argument enables the touchpad test.
 Physical UART remains an output-only early printk console.
+
+Optional battery / UPower fixture
+--------------------------------
+
+``--power-root /absolute/root`` enables ``CONFIG_MACSMC_POWER`` and the
+working SMC node independently of touchpad firmware. The existing MFD creates
+the power-supply child; no battery-specific DT node is needed. J700 uses the
+generic battery key model, not J713's telemetry profile. J700 B0RM is little
+endian independently of BCF0's critical-status width: the measured full-charge
+sample was 9543 mAh, not the incorrectly swapped 18213 mAh. Unqualified
+manufacture-date fields are omitted. The driver discovers readable properties
+so absent optional keys (notably BITV) cannot abort battery uevents. J700's
+charge-policy reset writes and writable charge controls remain disabled;
+existing critical-battery handling is retained. Older machines are unchanged.
+
+Supply ordinary, dereferenced AArch64 distribution files at these root paths::
+
+    usr/bin/upower
+    usr/libexec/upowerd
+    usr/bin/dbus-daemon
+    usr/bin/dbus-uuidgen
+    usr/bin/udevadm
+    usr/lib/systemd/systemd-udevd
+    usr/share/dbus-1/system.conf
+    usr/share/dbus-1/system.d/org.freedesktop.UPower.conf
+    etc/UPower/UPower.conf
+    usr/lib/udev/rules.d/60-upower-battery.rules
+
+Include the ELF interpreter and every matching library reported by ``ldd``
+on those programs at their original paths (including systemd's private
+library). Do not copy the donor's accounts, machine ID, credentials or runtime
+state. The fixture supplies root/dbus accounts and creates a fresh D-Bus ID in
+RAM. Shared files from the network root must be identical; conflicts fail the
+build. The tested donor is Fedora 44 AArch64, UPower 1.91.3, D-Bus 1.16.2 and
+udev 259.7. These binaries are test inputs, not repository contents.
+
+The init script launches real udev, the system D-Bus daemon and UPower in the
+RAM-only rescue environment. It records three sysfs/``upower -b`` snapshots
+in printk; daemon diagnostics are in ``/tmp/{udevd,dbus,upowerd}.log``. Press
+Q to leave the touchpad demo, then run ``upower -b`` or ``upower --monitor-detail``
+at the keyboard shell. This does not install services or modify any disk.
+UPower's logind-dependent shutdown actions are not available in this BusyBox
+fixture; a normal distribution supplies logind and its usual power policy.
+
+The contracts are ``NEO_BATTERY_FOR_CLEANROOM.md`` and its correction,
+``NEO_BATTERY_ENDIAN_DATE_CORRECTION.md`` (2026-09-07).
+``linux-enablement-mac-alpha/tests/test_j700_battery.py`` fault-injects the
+actual driver discovery and conversion functions with ASan/UBSan.
+
+Hardware acceptance on 2026-09-07: three consecutive real ``upower -b``
+queries reported ``macsmc-battery``, 100%, fully-charged, with 36.2596 Wh
+remaining and full energy. Kernel remaining/full charge both read
+9,542,000 microamp-hours, temperature 26.2 C, and cycle count 45. Complete
+battery/AC uevents succeeded; unqualified manufacture-date fields were absent.
+The USB wireless scan still succeeded and the touchpad demo initialized.
+Charger unplug/replug and discharge behavior have not yet been hardware-tested.
 
 Optional USB2 fixture
 ---------------------

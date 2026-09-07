@@ -2,6 +2,7 @@
 /bin/busybox mount -t devtmpfs devtmpfs /dev
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
+export PATH=/bin:/usr/bin:/usr/sbin
 echo '<6>NEO_INITRAMFS: Linux reached BusyBox userspace.' > /dev/kmsg
 if [ -x /bin/usb-status ]; then
     /bin/usb-status > /dev/kmsg &
@@ -9,6 +10,9 @@ if [ -x /bin/usb-status ]; then
 fi
 if [ -x /bin/usb-network-test ]; then
     /bin/usb-network-test &
+fi
+if [ -x /bin/power-test ]; then
+    /bin/power-test &
 fi
 /bin/busybox uname -a
 /bin/busybox cat /proc/cpuinfo

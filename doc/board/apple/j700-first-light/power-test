@@ -1,0 +1,56 @@
+#!/bin/sh
+# RAM-only service startup using unmodified distribution programs and policies.
+set -eu
+BB=/bin/busybox
+dump_log()
+{
+    [ -f "$1" ] || return 0
+    echo "NEO_BATTERY: $1" > /dev/kmsg
+    # Use shell builtins: this tiny BusyBox does not include every applet.
+    while IFS= read -r line || [ -n "$line" ]; do
+        while [ "${#line}" -gt 800 ]; do
+            printf '%s\n' "${line:0:800}" > /dev/kmsg
+            line=${line:800}
+        done
+        printf '%s\n' "$line" > /dev/kmsg
+    done < "$1"
+}
+finish()
+{
+    result=$?
+    set +e
+    echo "NEO_BATTERY: test exit=$result" > /dev/kmsg
+    for log in /tmp/power-startup.log /tmp/udevd.log /tmp/dbus.log /tmp/upowerd.log; do
+        dump_log "$log"
+    done
+    exit "$result"
+}
+# This is a diagnostic initramfs: retain complete userspace acceptance logs.
+echo on > /proc/sys/kernel/printk_devkmsg
+trap finish EXIT
+exec > /tmp/power-startup.log 2>&1
+for supply in /sys/class/power_supply/*; do
+    [ -f "$supply/uevent" ] || continue
+    dump_log "$supply/uevent"
+done
+$BB mkdir -p /run/dbus /run/udev /var/lib/dbus /var/lib/upower /root
+/usr/bin/dbus-uuidgen --ensure
+/usr/lib/systemd/systemd-udevd --daemon > /tmp/udevd.log 2>&1
+/usr/bin/udevadm trigger --action=add --subsystem-match=power_supply
+/usr/bin/udevadm settle --timeout=10
+/usr/bin/dbus-daemon --system --fork > /tmp/dbus.log 2>&1
+/usr/libexec/upowerd > /tmp/upowerd.log 2>&1 &
+$BB sleep 3
+for sample in 1 2 3; do
+    {
+        echo "NEO_BATTERY: sample $sample"
+        for supply in /sys/class/power_supply/*; do
+            [ -f "$supply/uevent" ] || continue
+            $BB cat "$supply/uevent"
+        done
+        /usr/bin/upower -b
+    } > /tmp/power-sample.txt 2>&1
+    dump_log /tmp/power-sample.txt
+    $BB sleep 10
+done
+echo '<6>NEO_BATTERY: UPower ready. Run upower -b from the shell.' > /dev/kmsg

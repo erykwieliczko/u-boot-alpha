@@ -29,6 +29,31 @@ def validate_touchpad_firmware(data):
         raise ValueError('invalid HIDF touchpad firmware')
 
 
+def merge_initramfs_root(manifest, root):
+    """Merge dereferenced userspace files; refuse conflicting shared libraries."""
+    entries = {line.split()[1]: line.split() for line in manifest.splitlines()}
+    extra = []
+    for path in sorted(root.rglob('*')):
+        if any(c.isspace() for c in str(path)) or path.is_symlink():
+            raise ValueError('root must contain dereferenced paths without whitespace')
+        target = '/' + path.relative_to(root).as_posix()
+        if target in entries:
+            old = entries[target]
+            if path.is_dir() and old[0] == 'dir':
+                continue
+            if path.is_file() and old[0] == 'file' and Path(old[2]).read_bytes() == path.read_bytes():
+                continue
+            raise ValueError(f'conflicting initramfs path: {target}')
+        if path.is_dir():
+            extra.append(f'dir {target} 755 0 0\n')
+        elif path.is_file():
+            mode = '755' if path.stat().st_mode & 0o111 else '644'
+            extra.append(f'file {target} {path} {mode} 0 0\n')
+        else:
+            raise ValueError(f'unsupported initramfs file: {path}')
+    return manifest + ''.join(extra)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, required=True)
@@ -42,6 +67,8 @@ def main():
                         help='With --usb2, service front HPM1; rear debug HPM stays unbound')
     parser.add_argument('--usb-network-root', type=Path,
                         help='Optional AArch64 iw/ip/timeout, libraries and firmware root')
+    parser.add_argument('--power-root', type=Path,
+                        help='Optional AArch64 UPower/D-Bus/udev root; enable SMC battery')
     parser.add_argument('--font', type=Path, default=Path('/usr/share/grub/unicode.pf2'))
     parser.add_argument('-j', type=int, default=8)
     args = parser.parse_args()
@@ -131,6 +158,22 @@ def main():
                         f'file /bin/busybox {busybox} 755 0 0\n' +
                         'slink /bin/sh /bin/busybox 777 0 0\n' +
                         f'file /init {fixture / "init"} 755 0 0\n' + touch_files + usb_files)
+    if args.power_root:
+        power_root = args.power_root.resolve()
+        for required in ('usr/bin/upower', 'usr/libexec/upowerd',
+                         'usr/bin/dbus-daemon', 'usr/bin/dbus-uuidgen',
+                         'usr/bin/udevadm', 'usr/lib/systemd/systemd-udevd',
+                         'etc/UPower/UPower.conf',
+                         'usr/share/dbus-1/system.conf',
+                         'usr/share/dbus-1/system.d/org.freedesktop.UPower.conf'):
+            if not (power_root / required).is_file():
+                parser.error(f'power root lacks {required}')
+        manifest = initlist.read_text().replace('dir /tmp 755 0 0\n', 'dir /tmp 1777 0 0\n')
+        initlist.write_text(merge_initramfs_root(manifest, power_root) +
+                           f'file /bin/power-test {fixture / "power-test"} 755 0 0\n' +
+                           f'file /etc/passwd {fixture / "power-passwd"} 644 0 0\n' +
+                           f'file /etc/group {fixture / "power-group"} 644 0 0\n')
+        usb_config += (fixture / 'power.config').read_text()
     config = work / 'linux.config'
     config.write_text((fixture / 'linux.config').read_text() +
                       touch_config + usb_config + f'CONFIG_INITRAMFS_SOURCE="{initlist}"\n')
@@ -162,6 +205,11 @@ def main():
         for feature in ('NET', 'INET', 'CFG80211', 'MAC80211', 'RTL8XXXU', 'USB_RTL8152'):
             if f'CONFIG_{feature}=y' not in enabled:
                 raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
+    if args.power_root:
+        for feature in ('MACSMC_POWER', 'MFD_MACSMC', 'POWER_SUPPLY', 'UNIX',
+                        'INOTIFY_USER', 'FILE_LOCKING'):
+            if f'CONFIG_{feature}=y' not in enabled:
+                raise ValueError(f'CONFIG_{feature} was disabled by Kconfig dependencies')
     run(*make, f'-j{args.j}', 'Image')
     run('make', '-C', m1n1, f'-j{args.j}', 'RELEASE=1', 'CHAINLOADING=0',
         'USE_CLANG=1', 'BUILDSTD=1')
@@ -169,6 +217,7 @@ def main():
     dtb = work / 'boot.dtb'
     run('aarch64-linux-gnu-gcc', '-E', '-nostdinc', '-undef', '-D__DTS__',
         *(['-DNEO_TOUCHPAD'] if args.touchpad_firmware else []),
+        *(['-DNEO_SMC'] if args.power_root else []),
         *(['-DNEO_USB2'] if args.usb2 else []),
         *(['-DNEO_USB2_FRONT'] if args.usb2_front else []),
         '-x', 'assembler-with-cpp', '-I', repo, '-I', linux / 'include',
